@@ -67,9 +67,15 @@ git -C vendor/uni-agent submodule update --init --depth 1 verl
 # the public library repo at the tag (the file is the CP-05 environment
 # freeze; there is no separately published lockfile artifact).
 mkdir -p assets
-if [ ! -f assets/uniagent-requirements.txt ]; then
-  curl -fsSL "${RAW}/devharness/uniagent/requirements.txt" -o assets/uniagent-requirements.txt
-fi
+# fetch() downloads via tmp+mv so an interrupted transfer can never leave a
+# truncated file that a rerun's existence guard would then accept.
+fetch() {
+  local url="$1" dest="$2"
+  [ -f "$dest" ] && return 0
+  curl -fsSL "$url" -o "$dest.tmp"
+  mv "$dest.tmp" "$dest"
+}
+fetch "${RAW}/devharness/uniagent/requirements.txt" assets/uniagent-requirements.txt
 "$PIP" install --disable-pip-version-check -q -e vendor/uni-agent
 "$PIP" install --disable-pip-version-check -q --no-deps -e vendor/uni-agent/verl
 # The frozen file is NOT flat-installable: its sglang pin was originally
@@ -83,12 +89,15 @@ grep -v '^sglang==' assets/uniagent-requirements.txt > assets/uniagent-requireme
 "$PIP" install --disable-pip-version-check -q --no-deps \
   "$(grep '^sglang==' assets/uniagent-requirements.txt)"
 "$PIP" install --disable-pip-version-check -q "gsj-envloader @ ${WHEEL_URL}"
-log "collector-venv: $("$PY" -c 'import gsj.envloader as g; print("gsj-envloader", g.__version__)')"
+# probe as a standalone command: inside log "$(...)" a failure would be
+# masked (set -e does not fail on substitutions in an argument position)
+VERSION_PROBE=$("$PY" -c 'import gsj.envloader as g; print("gsj-envloader", g.__version__)')
+log "collector-venv: $VERSION_PROBE"
 
 # ---- 4. the .pi render templates (library repo @ the tag) -------------------
 mkdir -p assets/templates
 for f in settings.json.tmpl mcp.json.tmpl models.json.tmpl; do
-  [ -f "assets/templates/$f" ] || curl -fsSL "${RAW}/devharness/pi/templates/$f" -o "assets/templates/$f"
+  fetch "${RAW}/devharness/pi/templates/$f" "assets/templates/$f"
 done
 log "templates: $(ls assets/templates)"
 
@@ -114,12 +123,18 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     exit 1
   }
 fi
-if [ ! -f assets/gsj-mcp/server.py ]; then
-  mkdir -p assets/gsj-mcp
+# guard on BOTH files, extract into a temp dir, move atomically: the mount
+# shadows the image's baked copy, so a half-extracted dir would break every
+# episode's MCP server far from the cause
+if [ ! -f assets/gsj-mcp/server.py ] || [ ! -f assets/gsj-mcp/decisions.py ]; then
+  rm -rf assets/gsj-mcp.tmp && mkdir -p assets/gsj-mcp.tmp
   cid=$(docker create "$IMAGE")
-  docker cp "$cid":/opt/gsj-mcp/server.py    assets/gsj-mcp/server.py
-  docker cp "$cid":/opt/gsj-mcp/decisions.py assets/gsj-mcp/decisions.py
+  trap 'docker rm "$cid" >/dev/null 2>&1 || true' EXIT
+  docker cp "$cid":/opt/gsj-mcp/server.py    assets/gsj-mcp.tmp/server.py
+  docker cp "$cid":/opt/gsj-mcp/decisions.py assets/gsj-mcp.tmp/decisions.py
   docker rm "$cid" >/dev/null
+  trap - EXIT
+  rm -rf assets/gsj-mcp && mv assets/gsj-mcp.tmp assets/gsj-mcp
 fi
 log "mcp shim: $(ls assets/gsj-mcp)"
 

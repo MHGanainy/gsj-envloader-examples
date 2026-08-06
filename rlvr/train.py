@@ -75,9 +75,14 @@ def main() -> None:
     optimizer = torch.optim.AdamW(
         (p for p in model.parameters() if p.requires_grad), lr=lr)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    # pinned to the codec's snapshot revision (driver.snapshot_path basename)
+    # so the §6.2 assert cannot break on an upstream HF main push
+    revision = (Path(str(config.driver["snapshot_path"])).name
+                if "snapshot_path" in config.driver else None)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, revision=revision)
     pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
-    tokenizer_json = Path(hf_hub_download(args.model, "tokenizer.json"))
+    tokenizer_json = Path(hf_hub_download(args.model, "tokenizer.json",
+                                          revision=revision))
 
     print(f"[rlvr] device={device.type} model={args.model} steps={steps} "
           f"batch_size={config.loader.batch_size}")
