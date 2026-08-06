@@ -26,11 +26,12 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 ```bash
 cd ..   # repo root
-collector-venv/bin/gsj-run --config rlvr/config.yaml --driver uniagent
+collector-venv/bin/gsj-collect --config rlvr/config.yaml
 ```
 
 9 episodes at the 900 s wall (budget ~15 min worst case; usually far
-less). The service idles at `round_complete` — Ctrl-C it (FINDINGS F-08).
+less). Bounded and observable: exits 0 at the `collector.seeding` target;
+one Ctrl-C drains (library 0.5.0, F-08/F-14/F-17 closed).
 
 ## Grade (offline — no GPU, no serving)
 

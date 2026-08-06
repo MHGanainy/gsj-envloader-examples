@@ -21,11 +21,12 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 ```bash
 cd ..   # repo root
-collector-venv/bin/gsj-run --config opd/config.yaml --driver uniagent
+collector-venv/bin/gsj-collect --config opd/config.yaml
 ```
 
-9 episodes (1 per train row); the service idles at `round_complete` —
-Ctrl-C it (FINDINGS F-08).
+9 episodes (the config's `collector.seeding` target): bounded, observable,
+stoppable — exits 0 at the target; one Ctrl-C drains (library 0.5.0,
+F-08/F-14/F-17 closed).
 
 ## Score (teacher = 4B serving)
 

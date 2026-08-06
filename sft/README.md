@@ -24,20 +24,17 @@ and vLLM serving Qwen3-0.6B at `serving.base_url`.
 
 ```bash
 cd ..   # repo root
-collector-venv/bin/gsj-run --config sft/config.yaml --driver uniagent
+collector-venv/bin/gsj-collect --config sft/config.yaml
 ```
 
-One round = 9 episodes (1 per train row), each an ephemeral sandbox
-container driven by pi against the served 0.6B, gate-verified (G1–G7),
-finalized into `sft/store/`. With `regenerate: wait_all` the service
-**idles** at `round_complete` when the round is done — watch the log and
-Ctrl-C it; there is no collect-and-exit flag (FINDINGS F-08). Quick
-doneness probe from another shell:
-
-```bash
-sft/.venv/bin/python -c "from gsj.envloader import TrajectoryStore; \
-s = TrajectoryStore.open('sft/store'); print(len(s.query(where={'consumed': False}))); s.close()"
-```
+9 episodes (the config's `collector.seeding.episodes` target; CLI flags
+override), each an ephemeral sandbox container driven by pi against the
+served 0.6B, gate-verified (G1–G7), finalized into `sft/store/`.
+`gsj-collect` (library 0.5.0 — CP-27's F-08/F-14/F-17 closed) prints one
+line per episode start/finish plus periodic `n/target trainable` progress,
+exits 0 at the target or round-complete, and drains in-flight episodes on
+a single Ctrl-C (a second one hard-exits). No polling shell, no
+`pkill` — the CP-27 recipe is deleted.
 
 ## Train
 

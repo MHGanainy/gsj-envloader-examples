@@ -17,14 +17,13 @@ identical copies, deliberately: each project is self-contained. The files
 are committed so the repo shows its data, and regenerable with this script
 (rerun it after the case repos change).
 
-API note: `PromptSpec`, `build_taskbank`, `write_taskbank` import from the
-package root, but `CaseSpec` does NOT — it must be fetched from the
-`gsj.envloader.taskbank` module path (library HOLES register H-29; a
-finding in FINDINGS.md).
+API note: every taskbank name imports from the package root — `CaseSpec`
+included since library 0.5.0 (H-29 closed; the F-06 submodule-path
+workaround is deleted).
 
 Run (any venv with the wheel):
     python -m venv .venv && .venv/bin/pip install \
-      "gsj-envloader @ https://github.com/MHGanainy/gsj-envloader/releases/download/v0.4.0/gsj_envloader-0.4.0-py3-none-any.whl"
+      "gsj-envloader @ https://github.com/MHGanainy/gsj-envloader/releases/download/v0.5.0/gsj_envloader-0.5.0-py3-none-any.whl"
     .venv/bin/python build_taskbank.py
 """
 
@@ -37,8 +36,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from gsj.envloader import PromptSpec, build_taskbank, write_taskbank
-from gsj.envloader.taskbank import CaseSpec  # not root-exported (H-29)
+from gsj.envloader import CaseSpec, PromptSpec, build_taskbank, write_taskbank
 
 CASES = {
     "case_0001": "https://github.com/MHGanainy/gsj-case-0001.git",

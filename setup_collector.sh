@@ -3,16 +3,33 @@
 #
 # The trainer venvs (sft/opd/rlvr per-project) are separate and tiny; this
 # script builds the other half of the two-environment reality: the venv that
-# runs `gsj-run --driver uniagent` (the collector process), plus the shared
-# on-disk assets every project's config.yaml points at:
+# runs `gsj-collect` / `gsj-run --driver uniagent` (the collector process),
+# plus the shared on-disk assets every project's config.yaml points at.
 #
+# v0.5.0 (the library's CP-28 closure) DELETED four of this script's CP-27
+# workarounds:
+#   - render templates: no longer fetched — they ship as package data inside
+#     the wheel (configs simply omit `templates_dir`)
+#   - MCP shim: no longer extracted from the image — configs name the baked
+#     copy directly (`mcp_launch.server: /opt/gsj-mcp/server.py` +
+#     `in_image: true`)
+#   - gate pins: now a published release asset (was: a committed byte-copy
+#     of the library source tree)
+#   - frozen collector deps: installed by the library's own published
+#     install_collector_env.sh (was: an inline re-derivation of the
+#     sglang --no-deps nuance)
+# and the codec snapshot download is gone too: configs carry the
+# host-portable driver `{model_id, revision}` pin pair and the driver
+# resolves it (HF cache, download on miss) at first run.
+#
+# What this leaves on disk:
 #   collector-venv/           python venv: uni-agent stack + the library wheel
 #   vendor/uni-agent/         uni-agent source @ the pinned sha (+ verl submodule)
-#   assets/templates/         the .pi render templates (from the library repo @ v0.4.0)
 #   assets/pages/             the MCP page corpus (release tarball, sha256-verified)
-#   assets/gsj-mcp/           the MCP shim, extracted FROM the sandbox image
-#                             (the H-28 workaround — see FINDINGS.md)
-#   + the Qwen3-0.6B tokenizer snapshot (HF cache; path printed at the end)
+#   assets/pins.dev.json      the dev gate pins (release asset, sha256-verified)
+#                             — dev-environment DATA: these validate the
+#                             published dev fixtures/codec; your own
+#                             environment regenerates its own pins (gsj-pin)
 #
 # Sources are public URLs only. Run on the GPU host, from the repo root.
 # Idempotent: every step is skipped or no-ops when already done.
@@ -23,22 +40,29 @@ ROOT="$PWD"
 
 # ---- the published identities (library docs/publishing.md) ------------------
 LIB_REPO="https://github.com/MHGanainy/gsj-envloader"
-LIB_TAG="v0.4.0"
+LIB_TAG="v0.5.0"
 RAW="https://raw.githubusercontent.com/MHGanainy/gsj-envloader/${LIB_TAG}"
-WHEEL_URL="${LIB_REPO}/releases/download/${LIB_TAG}/gsj_envloader-0.4.0-py3-none-any.whl"
+WHEEL_URL="${LIB_REPO}/releases/download/${LIB_TAG}/gsj_envloader-0.5.0-py3-none-any.whl"
 PAGES_URL="${LIB_REPO}/releases/download/${LIB_TAG}/gsj-pages-20260204.tar.gz"
 PAGES_SHA256="8c394701f81c29a6ddc8e0100337cb8e36206da18f0bb4ca441394467efa0f83"
+PINS_URL="${LIB_REPO}/releases/download/${LIB_TAG}/gsj-pins-0.5.0.json"
+PINS_SHA256="766ca30ea8ca15bcca249f167c8f42d23f2cb97eb3c33adf8bc97f8c4fa15d44"
 IMAGE="ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2"
 # uni-agent: GitHub source is the ONLY channel (no tags/releases; PyPI
 # 'uni-agent' is an unrelated name-squat). Sha = env.provenance.uniagent_sha.
 UNIAGENT_REPO="https://github.com/verl-project/uni-agent.git"
 UNIAGENT_SHA="73b0f41efa88b311fd69129c6f835c012e925e73"
-# codec tokenizer source (driver.snapshot_path): the library's dev model pin
-# (devharness/vllm/model-0.6b.env @ v0.4.0 — id + revision, resolved locally)
-MODEL_ID="Qwen/Qwen3-0.6B"
-MODEL_REVISION="c1899de289a04d12100db370d81485cdf75e47ca"
 
 log() { echo "[setup] $*"; }
+
+# fetch() downloads via tmp+mv so an interrupted transfer can never leave a
+# truncated file that a rerun's existence guard would then accept.
+fetch() {
+  local url="$1" dest="$2"
+  [ -f "$dest" ] && return 0
+  curl -fsSL "$url" -o "$dest.tmp"
+  mv "$dest.tmp" "$dest"
+}
 
 # ---- 1. the venv ------------------------------------------------------------
 if [ ! -d collector-venv ]; then
@@ -61,47 +85,23 @@ fi
 git -C vendor/uni-agent checkout --quiet "$UNIAGENT_SHA"
 git -C vendor/uni-agent submodule update --init --depth 1 verl
 
-# ---- 3. install: uni-agent (editable), verl (--no-deps), frozen pins, wheel -
-# uni-agent's pyproject declares NO dependencies; the working dependency set
-# is the library's frozen devharness/uniagent/requirements.txt — fetched from
-# the public library repo at the tag (the file is the CP-05 environment
-# freeze; there is no separately published lockfile artifact).
+# ---- 3. install: uni-agent (editable), verl (--no-deps), frozen set, wheel --
+# The frozen dependency set installs via the library's PUBLISHED installer
+# (the F-01 recipe as code — everything-but-sglang via -r, then the sglang
+# pin --no-deps; library publishing.md §4). Both files fetched at the tag.
 mkdir -p assets
-# fetch() downloads via tmp+mv so an interrupted transfer can never leave a
-# truncated file that a rerun's existence guard would then accept.
-fetch() {
-  local url="$1" dest="$2"
-  [ -f "$dest" ] && return 0
-  curl -fsSL "$url" -o "$dest.tmp"
-  mv "$dest.tmp" "$dest"
-}
 fetch "${RAW}/devharness/uniagent/requirements.txt" assets/uniagent-requirements.txt
+fetch "${RAW}/devharness/uniagent/install_collector_env.sh" assets/install_collector_env.sh
 "$PIP" install --disable-pip-version-check -q -e vendor/uni-agent
 "$PIP" install --disable-pip-version-check -q --no-deps -e vendor/uni-agent/verl
-# The frozen file is NOT flat-installable: its sglang pin was originally
-# installed --no-deps (the header says so — only sglang.srt.function_call is
-# used), and letting pip resolve sglang's full dep tree conflicts with the
-# frozen openai pin (ResolutionImpossible on linux). Reproduce the freeze:
-# everything-but-sglang resolved normally, then sglang --no-deps.
-# (FINDINGS.md — the recipe is prose in a file header, not an installable file.)
-grep -v '^sglang==' assets/uniagent-requirements.txt > assets/uniagent-requirements.nosglang.txt
-"$PIP" install --disable-pip-version-check -q -r assets/uniagent-requirements.nosglang.txt
-"$PIP" install --disable-pip-version-check -q --no-deps \
-  "$(grep '^sglang==' assets/uniagent-requirements.txt)"
+bash assets/install_collector_env.sh "$PIP" assets/uniagent-requirements.txt
 "$PIP" install --disable-pip-version-check -q "gsj-envloader @ ${WHEEL_URL}"
 # probe as a standalone command: inside log "$(...)" a failure would be
 # masked (set -e does not fail on substitutions in an argument position)
 VERSION_PROBE=$("$PY" -c 'import gsj.envloader as g; print("gsj-envloader", g.__version__)')
 log "collector-venv: $VERSION_PROBE"
 
-# ---- 4. the .pi render templates (library repo @ the tag) -------------------
-mkdir -p assets/templates
-for f in settings.json.tmpl mcp.json.tmpl models.json.tmpl; do
-  fetch "${RAW}/devharness/pi/templates/$f" "assets/templates/$f"
-done
-log "templates: $(ls assets/templates)"
-
-# ---- 5. the page corpus (release tarball, verified) -------------------------
+# ---- 4. the page corpus (release tarball, verified) -------------------------
 if [ ! -d assets/pages ]; then
   curl -fsSL "$PAGES_URL" -o assets/pages.tar.gz
   echo "${PAGES_SHA256}  assets/pages.tar.gz" | sha256sum -c -
@@ -110,11 +110,19 @@ if [ ! -d assets/pages ]; then
 fi
 log "pages: $(find assets/pages -name 'page_*.md' | wc -l | tr -d ' ') files"
 
-# ---- 6. the MCP shim, extracted from the image (H-28 workaround) ------------
-# The library bind-mounts mcp_launch.server's parent dir over /opt/gsj-mcp
-# unconditionally, and the config cannot name the in-image path (HOLES H-28).
-# Workaround: extract the image's own copy and mount it back — the mount then
-# re-mounts the image's own bytes.
+# ---- 5. the gate pins (release asset, verified) -----------------------------
+# Published dev-environment DATA (library publishing.md §3): validates the
+# published fixtures/templates/codec exactly. NOT a portable trust root —
+# your own artifacts get your own pins (gsj-pin).
+if [ ! -f assets/pins.dev.json ]; then
+  fetch "$PINS_URL" assets/pins.dev.json.download
+  echo "${PINS_SHA256}  assets/pins.dev.json.download" | sha256sum -c -
+  mv assets/pins.dev.json.download assets/pins.dev.json
+fi
+log "pins: assets/pins.dev.json ($(wc -c < assets/pins.dev.json | tr -d ' ') bytes)"
+
+# ---- 6. the sandbox image (preflight convenience — the library's own
+#          docker preflight refuses to auto-pull) -----------------------------
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   log "image $IMAGE not in the local daemon; trying anonymous pull"
   docker pull "$IMAGE" || {
@@ -123,34 +131,13 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     exit 1
   }
 fi
-# guard on BOTH files, extract into a temp dir, move atomically: the mount
-# shadows the image's baked copy, so a half-extracted dir would break every
-# episode's MCP server far from the cause
-if [ ! -f assets/gsj-mcp/server.py ] || [ ! -f assets/gsj-mcp/decisions.py ]; then
-  rm -rf assets/gsj-mcp.tmp && mkdir -p assets/gsj-mcp.tmp
-  cid=$(docker create "$IMAGE")
-  trap 'docker rm "$cid" >/dev/null 2>&1 || true' EXIT
-  docker cp "$cid":/opt/gsj-mcp/server.py    assets/gsj-mcp.tmp/server.py
-  docker cp "$cid":/opt/gsj-mcp/decisions.py assets/gsj-mcp.tmp/decisions.py
-  docker rm "$cid" >/dev/null
-  trap - EXIT
-  rm -rf assets/gsj-mcp && mv assets/gsj-mcp.tmp assets/gsj-mcp
-fi
-log "mcp shim: $(ls assets/gsj-mcp)"
-
-# ---- 7. the codec tokenizer snapshot ----------------------------------------
-SNAPSHOT=$("$PY" - "$MODEL_ID" "$MODEL_REVISION" <<'PY'
-import sys
-from huggingface_hub import snapshot_download
-print(snapshot_download(sys.argv[1], revision=sys.argv[2]))
-PY
-)
-log "codec snapshot: $SNAPSHOT"
+log "image: $IMAGE present"
 
 echo
-log "DONE. Now check every */config.yaml:"
-log "  - absolute paths must match THIS checkout root: $ROOT"
-log "  - driver.snapshot_path must be: $SNAPSHOT"
+log "DONE. Check every */config.yaml: absolute paths must match THIS"
+log "checkout root: $ROOT   (nothing else varies per host — templates ship"
+log "in the wheel, the MCP shim is the image's own, the codec snapshot"
+log "resolves from the driver {model_id, revision} pin pair at first run)"
 log "seed a project with:"
-log "  collector-venv/bin/gsj-run --config <project>/config.yaml --driver uniagent"
-log "(regenerate: wait_all — Ctrl-C it once the round completes; see the project READMEs)"
+log "  collector-venv/bin/gsj-collect --config <project>/config.yaml"
+log "(bounded: exits at the episode target or round-complete; Ctrl-C drains)"
