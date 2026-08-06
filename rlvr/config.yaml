@@ -1,0 +1,107 @@
+# rlvr/config.yaml — ONE file constructs both sides (library §9 / ADR-0037):
+# seeding (`collector-venv/bin/gsj-run --config rlvr/config.yaml --driver
+# uniagent`), grading (`grade.py --config rlvr/config.yaml`, offline), and
+# the trainer (`train.py --config rlvr/config.yaml`). Field reference:
+# library docs/config-reference.md.
+#
+# HOST-BOUND VALUES: pinned to the recorded-run host (the H200, repo at
+# /home/sysadmin/gsj-envloader-examples). A new host edits every absolute
+# path (setup_collector.sh prints the snapshot_path).
+
+store:
+  root: /home/sysadmin/gsj-envloader-examples/rlvr/store
+  config:
+    # Reuse-free via the ready's `serve_count: 0`; 1 here is posture.
+    max_serves_per_record: 1
+
+task:
+  # Episode lifecycle; docker mode => constant /workspace, G2 singleton
+  # (sft/config.yaml carries the long-form field commentary — the three
+  # projects deliberately duplicate this file shape).
+  work_root: /home/sysadmin/gsj-envloader-examples/rlvr/work
+  episodes_root: /home/sysadmin/gsj-envloader-examples/rlvr/store/episodes
+  templates_dir: /home/sysadmin/gsj-envloader-examples/assets/templates
+  clone_url_for:
+    case_0001: https://github.com/MHGanainy/gsj-case-0001.git
+    case_0002: https://github.com/MHGanainy/gsj-case-0002.git
+    case_0003: https://github.com/MHGanainy/gsj-case-0003.git
+    case_0004: https://github.com/MHGanainy/gsj-case-0004.git
+  pi_launch:
+    # Required-but-unused in docker mode; values = in-image paths (FINDINGS.md).
+    entry: /opt/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+    extension: /opt/pi/node_modules/pi-mcp-extension/src/index.ts
+    model_id: Qwen/Qwen3-0.6B
+    context_window: 32768
+  mcp_launch:
+    python: /opt/mcp-venv/bin/python   # unused in docker mode
+    # H-28 workaround: image-extracted shim; the unconditional mount
+    # re-mounts the image's own bytes.
+    server: /home/sysadmin/gsj-envloader-examples/assets/gsj-mcp/server.py
+    pages_root: /home/sysadmin/gsj-envloader-examples/assets/pages
+  tools_allowlist:
+    [read, ls, grep, find, write, edit, bash,
+     mcp_gsj_search_case, mcp_gsj_search_decisions,
+     mcp_gsj_case_status, mcp_gsj_decision_stats]
+  budgets:
+    # RLVR grades the DELIVERABLE: the model needs wall time to finish
+    # writing it. 480 s starves the reward signal (all-zero rewards);
+    # 900 s is the budget that produced graded artifacts upstream.
+    wall_timeout_s: 900.0
+  execution: docker
+  docker:
+    image: ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2
+
+collector:
+  harness_image: ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2
+  pi_version: "0.83.0"
+  uniagent_sha: 73b0f41efa88b311fd69129c6f835c012e925e73
+  collector_run_id: stranger-rlvr
+  pins_path: /home/sysadmin/gsj-envloader-examples/pins/pins.dev.json
+  sampling_student: {temperature: 0.6, top_p: 0.95, top_k: 20}
+  sampling_teacher: {}             # deferred upstream — no teacher behavior in 0.4.0
+  sampling_eval: {temperature: 0.6, top_p: 0.95, top_k: 20}
+  concurrency: 2
+
+rollout:
+  # 1 x 9 train rows = 9 episodes at the 900 s wall; wait_all idles after
+  # the round — Ctrl-C gsj-run then (FINDINGS.md).
+  behavior: student
+  target_completions_per_row: 1
+  max_attempts_per_row: 3
+  regenerate: wait_all
+  seed: 0
+
+taskbank:
+  path: /home/sysadmin/gsj-envloader-examples/rlvr/taskbank.parquet
+
+serving:
+  base_url: http://127.0.0.1:8100/v1
+  model: Qwen/Qwen3-0.6B
+
+driver:
+  # Codec tokenizer snapshot (host-bound, H-27; printed by setup_collector.sh).
+  snapshot_path: /home/sysadmin/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca
+
+loader:
+  batch_size: 2
+  poll_s: 0.25
+  starve_log_every: 8
+  timeout_s: 20.0
+  ready:
+    # The RLVR serving predicate: graded, fresh, reuse-free. Takes
+    # `truncated` AND the reward-0 no-artifact mass deliberately —
+    # absence of work is a verifiable outcome the grader emits, and the
+    # advantage baseline needs that mass. `rlvr._complete` gates on
+    # grade.py having run.
+    env.outcome.finish_state: {in: [completed, truncated]}
+    rlvr._complete: true
+    policy_lag: {lte: 0}
+    serve_count: 0
+
+user:
+  # Never read by the library. train.py reads lr/steps/out.
+  lr: 1.0e-4
+  steps: 4
+  out: adapters/run1
+  seeding:
+    deadline_s: 3600      # 9 episodes at a 900 s wall need headroom

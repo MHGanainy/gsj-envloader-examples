@@ -1,0 +1,120 @@
+# opd/config.yaml — ONE file constructs both sides (library §9 / ADR-0037):
+# seeding (`collector-venv/bin/gsj-run --config opd/config.yaml --driver
+# uniagent`), scoring (`score.py --config opd/config.yaml` against the
+# swapped-in teacher endpoint), and the trainer (`train.py --config
+# opd/config.yaml`). Field reference: library docs/config-reference.md.
+#
+# HOST-BOUND VALUES: pinned to the recorded-run host (the H200, repo at
+# /home/sysadmin/gsj-envloader-examples). A new host edits every absolute
+# path (setup_collector.sh prints the snapshot_path).
+
+store:
+  root: /home/sysadmin/gsj-envloader-examples/opd/store
+  config:
+    # OPD is strictly on-policy via the ready's `serve_count: 0` below —
+    # 1 here is posture, not the enforcement.
+    max_serves_per_record: 1
+
+task:
+  # Episode lifecycle; docker mode => constant /workspace, G2 singleton
+  # (see sft/config.yaml for the long-form field commentary — the three
+  # projects deliberately duplicate this file shape).
+  work_root: /home/sysadmin/gsj-envloader-examples/opd/work
+  episodes_root: /home/sysadmin/gsj-envloader-examples/opd/store/episodes
+  templates_dir: /home/sysadmin/gsj-envloader-examples/assets/templates
+  clone_url_for:
+    case_0001: https://github.com/MHGanainy/gsj-case-0001.git
+    case_0002: https://github.com/MHGanainy/gsj-case-0002.git
+    case_0003: https://github.com/MHGanainy/gsj-case-0003.git
+    case_0004: https://github.com/MHGanainy/gsj-case-0004.git
+  pi_launch:
+    # Required-but-unused in docker mode (in-image entry/extension run);
+    # values = the in-image paths, as documentation. See FINDINGS.md.
+    entry: /opt/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+    extension: /opt/pi/node_modules/pi-mcp-extension/src/index.ts
+    model_id: Qwen/Qwen3-0.6B      # behavior == trainee: the 0.6B acts
+    context_window: 32768
+  mcp_launch:
+    python: /opt/mcp-venv/bin/python   # unused in docker mode (in-image venv runs)
+    # H-28: the parent dir of `server` is bind-mounted over /opt/gsj-mcp
+    # unconditionally — this points at the image's OWN shim, extracted by
+    # setup_collector.sh, so the mount re-mounts the image's bytes.
+    server: /home/sysadmin/gsj-envloader-examples/assets/gsj-mcp/server.py
+    pages_root: /home/sysadmin/gsj-envloader-examples/assets/pages
+  tools_allowlist:
+    [read, ls, grep, find, write, edit, bash,
+     mcp_gsj_search_case, mcp_gsj_search_decisions,
+     mcp_gsj_case_status, mcp_gsj_decision_stats]
+  budgets:
+    wall_timeout_s: 480.0
+  execution: docker
+  docker:
+    image: ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2
+
+collector:
+  harness_image: ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2
+  pi_version: "0.83.0"
+  uniagent_sha: 73b0f41efa88b311fd69129c6f835c012e925e73
+  collector_run_id: stranger-opd
+  pins_path: /home/sysadmin/gsj-envloader-examples/pins/pins.dev.json
+  sampling_student: {temperature: 0.6, top_p: 0.95, top_k: 20}
+  sampling_teacher: {}             # deferred upstream — no teacher behavior in 0.4.0
+  sampling_eval: {temperature: 0.6, top_p: 0.95, top_k: 20}
+  concurrency: 2
+
+rollout:
+  # 1 x 9 train rows = 9 episodes; wait_all idles after the round —
+  # Ctrl-C gsj-run then (see FINDINGS.md on the missing exit mode).
+  behavior: student
+  target_completions_per_row: 1
+  max_attempts_per_row: 3
+  regenerate: wait_all
+  seed: 0
+
+taskbank:
+  path: /home/sysadmin/gsj-envloader-examples/opd/taskbank.parquet
+
+serving:
+  # The STUDENT endpoint (0.6B) used at collection. The teacher (4B) is
+  # served afterwards on the same port for score.py — a serve-side swap;
+  # this file describes the collection topology.
+  base_url: http://127.0.0.1:8100/v1
+  model: Qwen/Qwen3-0.6B
+
+driver:
+  # Codec tokenizer snapshot (host-bound, H-27; printed by setup_collector.sh).
+  snapshot_path: /home/sysadmin/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca
+
+loader:
+  batch_size: 2
+  poll_s: 0.25
+  starve_log_every: 8
+  timeout_s: 20.0
+  ready:
+    # The OPD serving predicate: scored, fresh, strictly on-policy.
+    # `truncated` IS trainable — OPD has valid per-token signal on
+    # truncated episodes. `opd._complete` gates on score.py having run;
+    # `policy_lag lte 0` is strict freshness; `serve_count: 0` excludes
+    # any re-serve — what makes the loop on-policy regardless of the
+    # store's max_serves_per_record.
+    env.outcome.finish_state: {in: [completed, truncated]}
+    opd._complete: true
+    policy_lag: {lte: 0}
+    serve_count: 0
+  mix:
+    # Served-batch composition: 100% student tapes (the trivial mix —
+    # the on_policy_fraction endpoint; also a filter).
+    env.policy.behavior: {student: 1.0}
+
+user:
+  # Never read by the library. train.py reads lr/steps/out; score.py
+  # reads teacher: (this project's own convention — the teacher identity
+  # is scoring config, not library config).
+  lr: 1.0e-4
+  steps: 4
+  out: adapters/run1
+  teacher:
+    model_id: Qwen/Qwen3-4B
+    revision: 1cfa9a7208912126459214e8b04321603b3df60c
+  seeding:
+    deadline_s: 1800

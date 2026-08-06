@@ -1,0 +1,14 @@
+# rlvr — trainer venv (grade.py runs here too; it needs only the library).
+# The library arrives by RELEASE URL; when an index exists, this line
+# becomes:
+#   gsj-envloader==0.4.0
+gsj-envloader @ https://github.com/MHGanainy/gsj-envloader/releases/download/v0.4.0/gsj_envloader-0.4.0-py3-none-any.whl
+
+# Trainer stack. torch: the cu128 wheel from the PyTorch index — PyPI's
+# torch 2.13 is cu130-only and this H200's driver ceiling is CUDA 12.8;
+# match your own host's driver.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128
+transformers==5.14.1
+peft==0.20.0
+huggingface_hub==1.26.0

@@ -1,0 +1,141 @@
+# sft/config.yaml — ONE file constructs both sides (library §9 / ADR-0037):
+# the collector process (`collector-venv/bin/gsj-run --config sft/config.yaml
+# --driver uniagent`) and the trainer's loader (`train.py --config
+# sft/config.yaml` via load_config + make_loader). Field reference:
+# library docs/config-reference.md. Library sections validate strictly —
+# an unknown key dies at load; `user:` is the free-form developer half.
+#
+# HOST-BOUND VALUES: this file pins the recorded-run host (the H200,
+# repo cloned at /home/sysadmin/gsj-envloader-examples). No env-var
+# interpolation exists — a new host means editing every absolute path
+# below (and re-resolving driver.snapshot_path; setup_collector.sh
+# prints the right value).
+
+store:
+  # Trajectories land here (parquet payloads + store.sqlite bookkeeping).
+  root: /home/sysadmin/gsj-envloader-examples/sft/store
+  config:
+    # 1 = the §7 posture: a record retires on its first committed serve.
+    # Raise for N epoch-fair passes over a static store; the SPI brake
+    # auto-scales with it (2.0 x N).
+    max_serves_per_record: 1
+
+task:
+  # The episode lifecycle: checkout -> gates -> pi (in docker) -> harvest.
+  # Checkouts land under <work_root>/<case_id>. In docker mode the
+  # in-container path is a constant /workspace, so the G2 system-prompt
+  # pin is host-path-independent (the pins/ copy carries that singleton).
+  work_root: /home/sysadmin/gsj-envloader-examples/sft/work
+  # Per-episode forensics (harvested deliverables, logs). Parked inside
+  # the store root so trained-from artifacts travel with the store.
+  episodes_root: /home/sysadmin/gsj-envloader-examples/sft/store/episodes
+  # The .pi render templates — fetched from the library repo @ v0.4.0 by
+  # setup_collector.sh (they are G4/G7-pinned TEMPLATE data).
+  templates_dir: /home/sysadmin/gsj-envloader-examples/assets/templates
+  # case_id -> clone URL. The public mirrors' repo slug (gsj-case-NNNN)
+  # differs from the case id (case_NNNN), so this is the explicit-mapping
+  # form, not a {case_id} pattern.
+  clone_url_for:
+    case_0001: https://github.com/MHGanainy/gsj-case-0001.git
+    case_0002: https://github.com/MHGanainy/gsj-case-0002.git
+    case_0003: https://github.com/MHGanainy/gsj-case-0003.git
+    case_0004: https://github.com/MHGanainy/gsj-case-0004.git
+  pi_launch:
+    # REQUIRED by the schema but UNUSED in docker mode — the runner execs
+    # the image's own baked entry/extension (task.docker.container_pi_*
+    # defaults). Values here are the in-image paths, as documentation;
+    # see FINDINGS.md (required-but-unused fields).
+    entry: /opt/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
+    extension: /opt/pi/node_modules/pi-mcp-extension/src/index.ts
+    model_id: Qwen/Qwen3-0.6B      # who acts — the served model requests route to
+    context_window: 32768
+  mcp_launch:
+    # python: same story — docker mode uses the in-image /opt/mcp-venv.
+    python: /opt/mcp-venv/bin/python
+    # server: load-bearing even in docker mode — its PARENT DIR is
+    # bind-mounted over the image's /opt/gsj-mcp unconditionally (HOLES
+    # H-28). setup_collector.sh extracts the image's own shim to
+    # assets/gsj-mcp so the mount re-mounts the image's own bytes.
+    server: /home/sysadmin/gsj-envloader-examples/assets/gsj-mcp/server.py
+    # The page corpus the MCP serves (release tarball, extracted).
+    pages_root: /home/sysadmin/gsj-envloader-examples/assets/pages
+  # The pinned 11-tool roster (G3 hashes the rendered roster).
+  tools_allowlist:
+    [read, ls, grep, find, write, edit, bash,
+     mcp_gsj_search_case, mcp_gsj_search_decisions,
+     mcp_gsj_case_status, mcp_gsj_decision_stats]
+  budgets:
+    wall_timeout_s: 480.0          # per-episode hard wall; overrun => infra_error
+  execution: docker                # one ephemeral sandbox container per episode
+  docker:
+    image: ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2
+
+collector:
+  # Provenance identity (stamped into every record) + sampling + thermostat.
+  # harness_image should equal task.docker.image in docker mode — it is
+  # what env.provenance.harness_image records.
+  harness_image: ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2
+  pi_version: "0.83.0"
+  uniagent_sha: 73b0f41efa88b311fd69129c6f835c012e925e73
+  collector_run_id: stranger-sft
+  # Gate fingerprints — generated library DATA, carried in this repo as a
+  # committed copy (pins/README.md has the provenance).
+  pins_path: /home/sysadmin/gsj-envloader-examples/pins/pins.dev.json
+  # Per-request sampling blocks: student (this run's behavior), teacher
+  # (deferred upstream — no teacher behavior executes in 0.4.0), eval
+  # (the frozen §6.3 block, auto-routed to eval-split rows).
+  sampling_student: {temperature: 0.6, top_p: 0.95, top_k: 20}
+  sampling_teacher: {}
+  sampling_eval: {temperature: 0.6, top_p: 0.95, top_k: 20}
+  concurrency: 2                   # concurrent episode dispatch
+
+rollout:
+  # One round = target_completions_per_row x train rows (9 here) = 9
+  # trainable episodes. wait_all: collect the round, then idle — the
+  # operator stops gsj-run once the round completes (no bounded
+  # "collect-and-exit" mode exists; see FINDINGS.md).
+  behavior: student
+  target_completions_per_row: 1
+  max_attempts_per_row: 3
+  regenerate: wait_all
+  seed: 0
+
+taskbank:
+  # The committed bank (build_taskbank.py regenerates it from the public
+  # case repos). 12 rows: 9 train / 3 eval (case_0004 is eval).
+  path: /home/sysadmin/gsj-envloader-examples/sft/taskbank.parquet
+
+serving:
+  # The OpenAI-compatible student endpoint (vLLM here). The library opens
+  # no connection itself — the collector's driver generates against it.
+  base_url: http://127.0.0.1:8100/v1
+  model: Qwen/Qwen3-0.6B
+
+driver:
+  # uniagent-driver config (open mapping). snapshot_path = the LOCAL HF
+  # snapshot dir the codec tokenizes with — a host-bound resolved value
+  # (HOLES H-27); setup_collector.sh downloads it and prints this path.
+  snapshot_path: /home/sysadmin/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca
+
+loader:
+  # The trainer side, from the SAME file (make_loader reads this).
+  batch_size: 2
+  poll_s: 0.25                     # small store: poll faster than the 0.5 default
+  starve_log_every: 8
+  timeout_s: 20.0                  # bounded wait; run-dry ends iteration
+  ready:
+    # SFT's serving predicate: completed episodes only. Hygiene
+    # (infra_error, gate failures) is applied BELOW any ready by the
+    # library; excluding `truncated` is this regime's distribution choice.
+    env.outcome.finish_state: completed
+
+user:
+  # The developer's half — validated as a mapping, never read by the
+  # library. train.py reads lr/steps/out. seeding: documents this run's
+  # provisioning intent (the H-26 tooling convention; gsj-run itself does
+  # not read it — the round targets above are what execute).
+  lr: 1.0e-4
+  steps: 4
+  out: adapters/run1
+  seeding:
+    deadline_s: 1800

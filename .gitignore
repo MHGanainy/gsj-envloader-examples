@@ -1,0 +1,11 @@
+# Generated at run time — never committed.
+collector-venv/
+vendor/
+assets/
+*/.venv/
+.venv-bank/
+*/store/
+*/work/
+*/adapters/
+__pycache__/
+*.log
