@@ -25,8 +25,44 @@ own register. Each row ends with a one-line reproduction.
 
 ## Run-phase findings
 
-(appended during the H200 runs)
+| id | where | severity | what happened | root cause | workaround | library-side? |
+|---|---|---|---|---|---|---|
+| F-14 | stopping gsj-run | FRICTION | a detached `gsj-run` ignores both SIGINT and SIGTERM (the embedded per-session gateway server installs its own handlers); only SIGKILL stops it | `run_forever` relies on KeyboardInterrupt, which the uvicorn session servers intercept | `pkill -KILL` after confirming round-complete via the store | yes — compounding F-08. Repro: `kill -INT`/`kill -TERM` an idling gsj-run; it survives both |
+| F-15 | opd/score.py, live | FRICTION+DOC | the first scoring run died on HTTP 400: a context-truncated tape has P+R = the serving window, and the completions route spends a +1 generation slot (`max_tokens=0` is rejected) — a tape AT the window cannot be scored through the API; nothing consumer-facing warns about the +1 slot | serving-API prompt-scoring needs one generation slot; the library's own example carries this lore inline, the docs don't | window pre-check + per-record containment (score.py); the record stays pending, `opd._complete` never set, the ready dict walls it off — the layered contracts turned a poison record into a clean exclusion | yes — one doc sentence on the scoring recipe. Repro: score a P+R=32768 tape against a 32768-window teacher |
+| F-16 | rlvr, live | DOC | at demo scale (9 episodes, 900 s wall, Qwen3-0.6B) the citation reward graded **all-zero** (2 artifacts, 0 citations; 7 no-shows) — RLVR training executes correctly but every step has zero advantage and zero gradient | model quality: the 0.6B rarely writes citing deliverables (a known upstream model-family gap), and 9 episodes is below the scale at which nonzero rewards appear (upstream saw 1 in 24) | none applied — recorded honestly; more episodes or a stronger actor are the real fixes | no (model/scale, not the library) — but a doc note on expected reward sparsity at demo scale would spare the next consumer the confusion |
+| F-17 | gsj-run observability | FRICTION | `gsj-run` prints **nothing** about progress — no episode started/completed lines, no round status; its entire stdout is a CUDA warning plus benign-but-alarming uvicorn `CancelledError` tracebacks labeled ERROR at every session teardown; the only way to watch a run is to poll the store from a second process | metrics go to an in-process `InMemoryMetrics` sink nothing scrapes; per-session server shutdown noise is unfiltered | store-polling loop (see the project READMEs); mentally filter the tracebacks | yes — progress logging (or a metrics dump) + log hygiene. Repro: run any seed and watch the log |
+
+## What worked without friction — for the record
+
+- Anonymous consumption of every published artifact: wheel by URL (two
+  hosts), GHCR image, case repos (`ls-remote` timesteps == the fixtures'
+  manifest exactly), pages tarball (sha256 match).
+- The one-file config: `load_config` fail-fast caught nothing because
+  strict validation made the file right before first run; the SAME file
+  drove `gsj-run`, both attach jobs, and all three trainers.
+- Gates on a foreign host: 27/27 episodes gate-clean, zero quarantined;
+  the G2 docker singleton (`f56e8a6e…`) reproduced under a brand-new
+  `work_root` — host-path independence held exactly as documented.
+- §6.2 identity: `check_tokenizer` green on every batch of all three
+  trainers; the teacher-side hash assert green across the 0.6B/4B swap.
+- §7 accounting: every run's `committed = steps × batch` exact; write-once
+  attach idempotency observed live in both jobs.
 
 ## What a stranger needs that doesn't exist yet
 
-(closing section — written after the runs)
+1. **A published collection-environment artifact set**: the pins file
+   (F-02), the render templates (F-03), and an *installable* frozen
+   collector dependency spec (F-01) are all load-bearing and all live
+   only inside the library repo's source tree today.
+2. **A bounded, observable, stoppable collector run**: `gsj-run` has no
+   collect-one-round-and-exit mode (F-08), swallows SIGINT/SIGTERM when
+   detached (F-14), and reports no progress (F-17) — seeding a store
+   currently means a second process polling the store and a SIGKILL.
+3. **A docker-mode config profile**: three schema-required fields are
+   dead in docker mode (F-07) and the snapshot path is host-bound (F-09).
+4. **Four doc sentences**: the +1 generation slot in serving-API scoring
+   (F-15), the L×V loss-memory arithmetic (F-11), attach-payload key
+   normalization (F-12), and the `episodes_root` forensics convention
+   (F-10).
+5. **An index-published wheel** — the requirements one-line swap the
+   library already anticipates.

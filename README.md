@@ -67,11 +67,17 @@ Then per project, in order (each README has the full run book):
 cd sft            # or opd, rlvr
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cd ..
-collector-venv/bin/gsj-run --config sft/config.yaml --driver uniagent   # seed; Ctrl-C after the round
+collector-venv/bin/gsj-run --config sft/config.yaml --driver uniagent   # seed; stop after the round
 # opd only: swap serving to the 4B, then .venv/bin/python score.py --config config.yaml
 # rlvr only: .venv/bin/python grade.py --config config.yaml
 sft/.venv/bin/python sft/train.py --config sft/config.yaml
 ```
+
+Operational reality of the seed step (FINDINGS F-08/F-14/F-17):
+`gsj-run` prints no progress and, once detached, ignores SIGINT/SIGTERM —
+watch the round by polling the store from a second shell (snippet in each
+project README) and stop the process with SIGKILL when the count reaches
+the round target.
 
 ## The taskbank
 
