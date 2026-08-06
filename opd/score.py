@@ -47,12 +47,12 @@ def post_json(url: str, payload: dict, timeout_s: float = 600.0) -> dict:
         return json.load(response)
 
 
-def served_model(endpoint: str) -> str:
+def served_model(endpoint: str) -> tuple[str, int | None]:
     with urllib.request.urlopen(f"{endpoint}/models", timeout=10) as response:
         data = json.load(response)["data"]
     if not data:
         raise SystemExit("serving endpoint lists no models")
-    return data[0]["id"]
+    return data[0]["id"], data[0].get("max_model_len")
 
 
 def teacher_logps(endpoint: str, model: str, ids: list[int]) -> list[float | None]:
@@ -99,9 +99,9 @@ def main() -> None:
     tokenizer_json = Path(hf_hub_download(teacher_id, "tokenizer.json",
                                           revision=teacher_rev))
     teacher_hash = git_blob_oid(tokenizer_json)
-    model = served_model(endpoint)
-    print(f"[score] teacher {teacher_id}@{teacher_rev} served as {model!r}; "
-          f"tokenizer OID {teacher_hash}")
+    model, max_model_len = served_model(endpoint)
+    print(f"[score] teacher {teacher_id}@{teacher_rev} served as {model!r} "
+          f"(window {max_model_len}); tokenizer OID {teacher_hash}")
 
     store = TrajectoryStore.open(config.store.root)
     uids = store.query(missing="opd._complete", where=SCORE_WHERE)
@@ -110,17 +110,36 @@ def main() -> None:
             "align": "target", "route": "prompt_logprobs", "v": 1}
 
     means: list[float] = []
+    skipped: list[str] = []
     for uid, record in zip(uids, store.load(uids)):
         served_hash = record.env.provenance["codec"]["tokenizer_hash"]
         if served_hash != teacher_hash:
             raise SystemExit(f"tokenizer mismatch (§6.2): teacher {teacher_hash}"
                              f" != served {served_hash} (uid {uid})")
         P, R = len(record.prompts), len(record.responses)
-        logps = teacher_logps(endpoint, model, [int(t) for t in record.input_ids])
-        response_logps = logps[P : P + R]
-        if len(response_logps) != R or any(lp is None for lp in response_logps):
-            raise SystemExit(f"{uid}: teacher returned {len(response_logps)} "
-                             f"logps for R={R}")
+        # The completions route spends one generation slot (max_tokens=1;
+        # max_tokens=0 is rejected), so a tape AT the serving window cannot
+        # be scored through the API — learned live on a context-truncated
+        # tape (P+R = the window). Skip loudly; the record stays pending
+        # (never satisfies opd._complete, so the ready dict walls it off).
+        if max_model_len is not None and P + R + 1 > max_model_len:
+            print(f"[score]   {uid}: SKIPPED — P+R+1 = {P + R + 1} exceeds the "
+                  f"teacher window {max_model_len} (the +1 is the API's "
+                  f"generation slot); needs a local-prefill fallback or a "
+                  f"larger serving window")
+            skipped.append(uid)
+            continue
+        try:
+            logps = teacher_logps(endpoint, model,
+                                  [int(t) for t in record.input_ids])
+            response_logps = logps[P : P + R]
+            if len(response_logps) != R or any(lp is None for lp in response_logps):
+                raise RuntimeError(f"teacher returned {len(response_logps)} "
+                                   f"logps for R={R}")
+        except Exception as error:  # one poison record must not abort the run
+            print(f"[score]   {uid}: FAILED — {error}")
+            skipped.append(uid)
+            continue
         column = np.asarray(response_logps, dtype=np.float32)  # full-R float32
         store.attach(uid, "opd", {"teacher_logp_sampled": column,
                                   "teacher_meta": meta}, complete=True)
@@ -132,8 +151,11 @@ def main() -> None:
 
     remaining = store.query(missing="opd._complete", where=SCORE_WHERE)
     print(f"[score] done: scored {len(means)}; {len(remaining)} still pending "
-          f"(a clean re-run scores 0 — attach is write-once)")
+          f"(a clean re-run retries exactly those — attach is write-once)")
     store.close()
+    if skipped:
+        raise SystemExit(f"{len(skipped)} record(s) not scored (listed above); "
+                         f"they stay pending and unserved")
 
 
 if __name__ == "__main__":
