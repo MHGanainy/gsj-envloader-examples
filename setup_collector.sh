@@ -72,7 +72,16 @@ if [ ! -f assets/uniagent-requirements.txt ]; then
 fi
 "$PIP" install --disable-pip-version-check -q -e vendor/uni-agent
 "$PIP" install --disable-pip-version-check -q --no-deps -e vendor/uni-agent/verl
-"$PIP" install --disable-pip-version-check -q -r assets/uniagent-requirements.txt
+# The frozen file is NOT flat-installable: its sglang pin was originally
+# installed --no-deps (the header says so — only sglang.srt.function_call is
+# used), and letting pip resolve sglang's full dep tree conflicts with the
+# frozen openai pin (ResolutionImpossible on linux). Reproduce the freeze:
+# everything-but-sglang resolved normally, then sglang --no-deps.
+# (FINDINGS.md — the recipe is prose in a file header, not an installable file.)
+grep -v '^sglang==' assets/uniagent-requirements.txt > assets/uniagent-requirements.nosglang.txt
+"$PIP" install --disable-pip-version-check -q -r assets/uniagent-requirements.nosglang.txt
+"$PIP" install --disable-pip-version-check -q --no-deps \
+  "$(grep '^sglang==' assets/uniagent-requirements.txt)"
 "$PIP" install --disable-pip-version-check -q "gsj-envloader @ ${WHEEL_URL}"
 log "collector-venv: $("$PY" -c 'import gsj.envloader as g; print("gsj-envloader", g.__version__)')"
 
