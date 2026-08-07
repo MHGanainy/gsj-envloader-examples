@@ -10,10 +10,12 @@ ready dict is what makes the loop on-policy: `serve_count: 0` (never
 re-serve), `policy_lag lte 0` (fresh), `opd._complete` (scored), and a
 `mix` pinning 100% student tapes.
 
-The teacher lives under `user.teacher` (base_url + model_id + revision):
-the library's `serving:` section is the single student endpoint by
-schema, and teacher scoring is consumer craft — §9's developer half. The
-prod swap for BOTH endpoints is two URLs, nothing else.
+The teacher lives in `train.py`'s **TEACHER** constant (base_url +
+model_id + revision — the CP-33 config split): the library's `serving:`
+section is the single student endpoint by schema, and teacher scoring is
+consumer craft — §9's developer half. The prod swap for BOTH endpoints is
+two URLs, nothing else (`serving.base_url` in config.yaml,
+`TEACHER["base_url"]` in train.py).
 
 ## Prepare (once)
 
@@ -33,16 +35,19 @@ until then substitute any library commit-sha raw URL of the same path.
 
 Prerequisites beyond that (root README): the staging estate up — Forgejo,
 MCP service `ready`, the **student** vLLM (`serving.base_url`) AND the
-**teacher** vLLM (`user.teacher.base_url`, `Qwen/Qwen3-4B` with
+**teacher** vLLM (`TEACHER["base_url"]`, `Qwen/Qwen3-4B` with
 prompt-logprobs available — stock vLLM has it) — plus the sandbox image
 and `GSJ_MCP_TOKEN_SECRET`.
 
 ## What to edit
 
-1. Endpoint hosts in `config.yaml` (Forgejo, MCP, student serving, and
-   `user.teacher.base_url`) — your estate's topology.
+1. Endpoint hosts (Forgejo, MCP, student serving in `config.yaml`;
+   the teacher in `train.py`'s `TEACHER["base_url"]`) — your estate's
+   topology.
 2. The scratch paths + the taskbank's absolute path — your checkout.
-3. `user:` (lr / steps / out) — yours.
+3. Training parameters (lr / steps / out, and the teacher identity) — the
+   **TRAINING PARAMETERS** constants at the top of `train.py` (the CP-33
+   config split: `config.yaml` is the library surface only).
 
 ## Run
 

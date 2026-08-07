@@ -22,7 +22,7 @@ What each project consumes (library `docs/publishing.md` + `staging/README.md`):
 | gate pins | the staging-inputs raw URL + sha256 in the config — fetched and cache-verified by the library itself |
 | taskbank | the committed per-project `taskbank.parquet` — **byte-identical to the hosted staging artifact** (same sha256, pinned in the config); a one-line commented alternative consumes it by URL instead |
 | render templates | package data inside the wheel (configs omit `templates_dir`) |
-| serving | the always-on student endpoint (`serving.base_url`); OPD adds the always-on teacher endpoint under `user.teacher` |
+| serving | the always-on student endpoint (`serving.base_url`); OPD adds the always-on teacher endpoint via `train.py`'s `TEACHER` constant (the CP-33 config split) |
 
 ## One venv per project (the two-environment reality is gone)
 
@@ -51,8 +51,9 @@ the library's freeze with the sglang line removed.
 - The staging estate up: the Forgejo case host, the MCP service
   (`/health` → `"state": "ready"`), the **student** vLLM
   (`Qwen/Qwen3-0.6B` at `serving.base_url`), and — for OPD — the
-  **teacher** vLLM (`Qwen/Qwen3-4B` at `user.teacher.base_url`, an
-  always-on second endpoint; the serve-swap era is over).
+  **teacher** vLLM (`Qwen/Qwen3-4B` at `TEACHER["base_url"]` in
+  `opd/train.py`, an always-on second endpoint; the serve-swap era is
+  over).
 - Docker with the sandbox image present (`pull: true` in the config does
   it automatically on a host whose daemon has registry egress; this
   estate's does not, so the image arrived by `docker save | ssh docker load`).
@@ -75,11 +76,13 @@ teacher endpoint; RLVR: verifiable grading with ground truth from the MCP
 service's own `/health` census), trains, saves the adapter, and prints
 the serve/commit accounting.
 
-**What a consumer edits** (the whole list, per config): the endpoint
-hosts (Forgejo / MCP / serving — deployment topology), the consumer-owned
-scratch paths (`store.root`, `task.work_root`, `task.episodes_root`, the
-taskbank's absolute path), and `user:` (lr/steps/out — never read by the
-library).
+**What a consumer edits** (the whole list): in each `config.yaml`, the
+endpoint hosts (Forgejo / MCP / serving — deployment topology) and the
+consumer-owned scratch paths (`store.root`, `task.work_root`,
+`task.episodes_root`, the taskbank's absolute path); in each `train.py`,
+the **TRAINING PARAMETERS** constants at the top (lr / steps / out; OPD
+adds the teacher endpoint). Since the CP-33 config split the configs
+carry the library surface only — there is no `user:` section.
 
 ## The taskbank
 

@@ -57,6 +57,27 @@ from gsj.envloader.collect import install_log_filter
 
 import score as scorer
 
+# =========================================================================
+# TRAINING PARAMETERS (CP-33 config split). The developer's half lives HERE
+# in code; config.yaml carries ONLY the library surface (endpoints, store,
+# task, collector, rollout, taskbank, serving, driver, loader). Edit these
+# to change the run; edit config.yaml to change the environment.
+# =========================================================================
+LEARNING_RATE = 1e-4
+STEPS = 4                          # optimizer steps (islice over torch_batches)
+OUT_DIR = "adapters/run1"          # adapter output, relative to this file
+
+# The always-on TEACHER endpoint + its §6.2 identity (ADR-0044 estate).
+# Teacher scoring is consumer craft — the library's `serving:` section stays
+# the single student endpoint by schema. The prod swap for BOTH endpoints is
+# two URLs, nothing else: serving.base_url in config.yaml and
+# TEACHER["base_url"] here.
+TEACHER = {
+    "base_url": "http://127.0.0.1:8101/v1",
+    "model_id": "Qwen/Qwen3-4B",
+    "revision": "1cfa9a7208912126459214e8b04321603b3df60c",
+}
+
 
 def collect_event(event: dict) -> None:
     kind = event.get("type")
@@ -113,14 +134,13 @@ def main() -> None:
         install_log_filter()
 
     config = load_config(args.config)
-    user = config.user
-    steps = int(user.get("steps", 4))
-    lr = float(user.get("lr", 1e-4))
-    out = args.config.parent / user.get("out", "adapters/run1")
+    steps = STEPS
+    lr = LEARNING_RATE
+    out = Path(__file__).resolve().parent / OUT_DIR
 
     # ---- collect (in-process), then score against the always-on teacher ----
     collect_and_verify(config, "opd")
-    summary = scorer.score(config)
+    summary = scorer.score(config, TEACHER)
     if summary["scored"] == 0:
         sys.exit("[opd] nothing scored — the ready dict would starve; aborting")
 

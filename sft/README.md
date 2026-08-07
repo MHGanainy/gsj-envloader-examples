@@ -35,7 +35,9 @@ local docker daemon, and `GSJ_MCP_TOKEN_SECRET` exported.
    `url_base`, `serving.base_url`) — your estate's topology.
 2. The scratch paths (`store.root`, `task.work_root`,
    `task.episodes_root`) + the taskbank's absolute path — your checkout.
-3. `user:` (lr / steps / out) — yours; the library never reads it.
+3. Training parameters (lr / steps / out) — the **TRAINING PARAMETERS**
+   constants at the top of `train.py` (the CP-33 config split:
+   `config.yaml` is the library surface only; the run is code).
 
 The taskbank default is the **committed** `taskbank.parquet` (the repo
 shows its data; the sha256 pin in the config verifies the local file and
@@ -56,7 +58,7 @@ cloned from the staging Forgejo, pins fetched sha-verified — then
 gate-verified (G1–G7) and finalized into `sft/store/`. The script prints
 each structured progress event, the CollectReport, and a per-record gate
 spot-check (gates empty, G2/G3 hashes, mounts = 2). Training:
-`user.steps` = 4 optimizer steps at `loader.batch_size` = 2; the adapter
+`STEPS` = 4 optimizer steps at `loader.batch_size` = 2; the adapter
 lands in `sft/adapters/run1`; the accounting block shows per-record serve
 counts (the §7 commit-retires contract, observable).
 

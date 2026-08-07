@@ -3,16 +3,18 @@
 # =========================================================================
 # ONE file drives everything `python train.py` does: collect_episodes
 # (in-process), teacher scoring (in-process, against the ALWAYS-ON teacher
-# endpoint under user.teacher — no serve swap exists anymore), and the
-# loader. Derived from the library's staging/config.staging.yaml; field
-# reference: docs/config-reference.md. sft/config.yaml carries the
+# endpoint — train.py's TEACHER constant; no serve swap exists anymore),
+# and the loader. Derived from the library's staging/config.staging.yaml;
+# field reference: docs/config-reference.md. sft/config.yaml carries the
 # long-form field commentary — the three projects deliberately duplicate
 # this file shape.
 #
-# The teacher endpoint lives under `user:`: the library's `serving:`
-# section is the single student endpoint (strict schema, one URL); teacher
-# scoring is consumer craft — §9's developer half — so its identity and
-# URL are consumer data. That is a recorded CP-31 decision, not an accident.
+# Since the CP-33 config split this file carries the LIBRARY SURFACE ONLY.
+# The teacher endpoint lives in train.py's TEACHER constant: the library's
+# `serving:` section is the single student endpoint (strict schema, one
+# URL); teacher scoring is consumer craft — §9's developer half — so its
+# identity and URL are consumer code. (CP-31 homed it under `user:`; CP-33
+# moved it to the constants block with the other training parameters.)
 
 store:
   root: /home/sysadmin/gsj-envloader-examples/opd/store
@@ -77,7 +79,7 @@ taskbank:
 
 serving:
   # The STUDENT endpoint — generation at collection. The teacher is its
-  # own always-on endpoint under user.teacher below.
+  # own always-on endpoint, named by train.py's TEACHER constant.
   base_url: http://127.0.0.1:8100/v1
   model: Qwen/Qwen3-0.6B
 
@@ -101,15 +103,3 @@ loader:
     serve_count: 0
   mix:
     env.policy.behavior: {student: 1.0}
-
-user:
-  # Never read by the library. train.py reads lr/steps/out; the in-process
-  # scorer reads teacher: — the always-on teacher endpoint + its §6.2
-  # identity (the prod swap for BOTH endpoints is two URLs, nothing else).
-  lr: 1.0e-4
-  steps: 4
-  out: adapters/run1
-  teacher:
-    base_url: http://127.0.0.1:8101/v1
-    model_id: Qwen/Qwen3-4B
-    revision: 1cfa9a7208912126459214e8b04321603b3df60c

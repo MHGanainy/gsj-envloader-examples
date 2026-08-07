@@ -91,9 +91,3 @@ loader:
     rlvr._complete: true
     policy_lag: {lte: 0}
     serve_count: 0
-
-user:
-  # Never read by the library; train.py reads these.
-  lr: 1.0e-4
-  steps: 4
-  out: adapters/run1

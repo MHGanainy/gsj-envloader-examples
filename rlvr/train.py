@@ -53,6 +53,16 @@ from gsj.envloader.collect import install_log_filter
 
 import grade as grader
 
+# =========================================================================
+# TRAINING PARAMETERS (CP-33 config split). The developer's half lives HERE
+# in code; config.yaml carries ONLY the library surface (endpoints, store,
+# task, collector, rollout, taskbank, serving, driver, loader). Edit these
+# to change the run; edit config.yaml to change the environment.
+# =========================================================================
+LEARNING_RATE = 1e-4
+STEPS = 4                          # optimizer steps (islice over torch_batches)
+OUT_DIR = "adapters/run1"          # adapter output, relative to this file
+
 
 def collect_event(event: dict) -> None:
     kind = event.get("type")
@@ -109,10 +119,9 @@ def main() -> None:
         install_log_filter()
 
     config = load_config(args.config)
-    user = config.user
-    steps = int(user.get("steps", 4))
-    lr = float(user.get("lr", 1e-4))
-    out = args.config.parent / user.get("out", "adapters/run1")
+    steps = STEPS
+    lr = LEARNING_RATE
+    out = Path(__file__).resolve().parent / OUT_DIR
 
     # ---- collect (in-process), then grade (in-process) ----
     collect_and_verify(config, "rlvr")

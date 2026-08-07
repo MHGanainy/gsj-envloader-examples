@@ -21,7 +21,9 @@
 #   1. endpoint hosts (Forgejo, MCP service, serving) — deployment topology;
 #   2. the consumer-owned scratch paths (store.root, task.work_root,
 #      task.episodes_root) + the taskbank's absolute path;
-#   3. user: (lr/steps/out — the developer's half; never read by the library).
+#   3. training parameters (lr/steps/out): the TRAINING PARAMETERS constants
+#      at the top of train.py — since the CP-33 config split this file
+#      carries the LIBRARY SURFACE ONLY.
 
 store:
   # Consumer-owned scratch: the store is created here.
@@ -128,9 +130,3 @@ loader:
     # SFT's serving predicate: completed episodes only. Hygiene
     # (infra_error, gate failures) applies BELOW any ready, always.
     env.outcome.finish_state: completed
-
-user:
-  # The developer's half — never read by the library; train.py reads these.
-  lr: 1.0e-4
-  steps: 4
-  out: adapters/run1

@@ -43,7 +43,9 @@ MCP service `ready`, student vLLM serving), the sandbox image, and
 1. Endpoint hosts in `config.yaml` (Forgejo, MCP, serving) — your
    estate's topology.
 2. The scratch paths + the taskbank's absolute path — your checkout.
-3. `user:` (lr / steps / out) — yours.
+3. Training parameters (lr / steps / out) — the **TRAINING PARAMETERS**
+   constants at the top of `train.py` (the CP-33 config split:
+   `config.yaml` is the library surface only; the run is code).
 
 ## Run
 

@@ -6,8 +6,8 @@ external consumer.
 Per unscored trainable record: assert the teacher tokenizes identically
 (§6.2 — one `git_blob_oid` call against the served provenance), request
 the teacher's per-token logprobs over the record's exact `input_ids` via
-the ALWAYS-ON teacher endpoint (`user.teacher.base_url` — no serve swap
-exists anymore; vLLM's `prompt_logprobs` extra body param on
+the ALWAYS-ON teacher endpoint (train.py's TEACHER constant — no serve
+swap exists anymore; vLLM's `prompt_logprobs` extra body param on
 /v1/completions with a token-id prompt), slice the response span, attach
 as full-R float32 `opd.teacher_logp_sampled` with `complete=True`.
 
@@ -78,12 +78,13 @@ def teacher_logps(endpoint: str, model: str, ids: list[int]) -> list[float | Non
     return out
 
 
-def score(config) -> dict:
-    """Score every unscored trainable record; returns a summary dict."""
-    teacher = config.user.get("teacher") or {}
+def score(config, teacher: dict) -> dict:
+    """Score every unscored trainable record; returns a summary dict.
+    ``teacher`` is train.py's TEACHER constant (CP-33 config split:
+    {base_url, model_id, revision} — consumer craft, not config.yaml)."""
     endpoint = str(teacher.get("base_url", "")).rstrip("/")
     if not endpoint:
-        raise RuntimeError("user.teacher.base_url missing — the always-on "
+        raise RuntimeError("TEACHER['base_url'] missing — the always-on "
                            "teacher endpoint is this project's convention")
     teacher_id = teacher.get("model_id", "Qwen/Qwen3-4B")
     teacher_rev = teacher.get("revision")

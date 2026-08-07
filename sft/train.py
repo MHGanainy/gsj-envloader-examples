@@ -10,7 +10,8 @@ docs/config-reference.md by an external consumer.
     loader = make_loader(config)            # the SAME file serves the store
     ... torch_batches -> loss -> commit -> adapter save -> accounting
 
-`user:` carries our lr/steps/out; the library never reads it.
+Training parameters live in the TRAINING PARAMETERS block below (CP-33
+config split): config.yaml carries only the library surface.
 """
 
 from __future__ import annotations
@@ -40,6 +41,16 @@ from gsj.envloader import (
 # per-session uvicorn CancelledError teardown noise (F-19). --no-log-filter
 # shows the raw noise instead.
 from gsj.envloader.collect import install_log_filter
+
+# =========================================================================
+# TRAINING PARAMETERS (CP-33 config split). The developer's half lives HERE
+# in code; config.yaml carries ONLY the library surface (endpoints, store,
+# task, collector, rollout, taskbank, serving, driver, loader). Edit these
+# to change the run; edit config.yaml to change the environment.
+# =========================================================================
+LEARNING_RATE = 1e-4
+STEPS = 4                          # optimizer steps (islice over torch_batches)
+OUT_DIR = "adapters/run1"          # adapter output, relative to this file
 
 
 def collect_event(event: dict) -> None:
@@ -103,10 +114,9 @@ def main() -> None:
         install_log_filter()
 
     config = load_config(args.config)          # fail-fast at the file
-    user = config.user
-    steps = int(user.get("steps", 4))
-    lr = float(user.get("lr", 1e-4))
-    out = args.config.parent / user.get("out", "adapters/run1")
+    steps = STEPS
+    lr = LEARNING_RATE
+    out = Path(__file__).resolve().parent / OUT_DIR
 
     # ---- collect (in-process; targets from collector.seeding) ----
     collect_and_verify(config, "sft")
