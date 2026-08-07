@@ -48,23 +48,65 @@ own register. Each row ends with a one-line reproduction.
 - §7 accounting: every run's `committed = steps × batch` exact; write-once
   attach idempotency observed live in both jobs.
 
-## What a stranger needs that doesn't exist yet — rewritten against v0.5.0
+## CP-31 — the zero-CLI run (library v0.6.0, endpoint-only)
 
-The CP-27 list is burned down. Items 1–4 (the published artifact set, the
-bounded/observable/stoppable collector run, the docker-mode profile
-frictions, the four doc sentences) all closed in library v0.5.0 — the
-Status column above names each mechanism, and this repo's own workarounds
-were **deleted** in the CP-28 closure commits: the shim extraction, the
-template raw-fetch, the pins byte-copy, the `CaseSpec` submodule import,
-the hand-pasted snapshot path, and the store-polling + `pkill -KILL`
-seeding recipe are all gone; `setup_collector.sh` shrank accordingly.
+The claim under test: *install a wheel, edit endpoint values in one YAML,
+run `python train.py`, and train — no CLI invoked, no scripts fetched, no
+mounts configured, no data staged.* All three regimes ran green on the
+staging estate (H200, 2026-08-07), each as ONE command from ONE venv.
+New rows:
 
-What remains:
+| id | where | severity | what happened | root cause | workaround | library-side? | status |
+|---|---|---|---|---|---|---|---|
+| F-18 | venv build, all three projects | FRICTION | one venv now runs both halves (`collect_episodes` is in-process since 0.6.0) — but BUILDING it takes three pip invocations, not one `pip install -r`: the frozen collector set is still not flat-installable (the sglang pin was captured `--no-deps` — F-01's shadow, now over every consumer instead of one shared collector venv), and verl installs `--no-deps` from the uni-agent submodule | the CP-05 freeze's install-mode nuances have no flat-file expression | a committed `collector-requirements.txt` (the freeze minus sglang, provenance header) + one documented `--no-deps` pip line; `setup_collector.sh` DELETED — pip against public URLs is the whole story (uni-agent and verl install non-editable from git direct references; pip initializes the submodule itself) | yes — publish an installable constraints set, or make the hermes-parser dep optional. Repro: `pip install -r` the raw freeze on linux | **open** → library H-41 (fix) |
+| F-19 | every `collect_episodes` run, live | FRICTION | the CP-27 F-17 uvicorn `CancelledError` teardown tracebacks are BACK: the library call installs no log filters (documented, correct for a library), but the CLI's filter is not exported/documented as the consumer answer — the recorded OPD run interleaved 12 alarming `ERROR Traceback` blocks into an otherwise clean transcript | log hygiene was fixed CLI-side only (v0.5.0); `gsj.envloader.collect.install_log_filter()` exists but is discoverable only by reading source | none applied (transcripts read around the noise) | yes — document/root-export the filter (one README sentence minimum). Repro: any in-process collection; count `^ERROR` lines | **open** → library H-42 (fix) |
+| F-20 | sft collection target vs its ready (pre-run review; did NOT bite) | DOC | `collect_episodes` counts "trainable" as completed OR truncated, but SFT's ready serves completed-only — a truncated episode counts toward the 9-episode target yet never serves, silently shortening the training run | the target's trainable definition is regime-agnostic; a regime's ready can be stricter | over-provision `collector.seeding.episodes` (or widen the ready); the recorded run was 9/9 completed, so nothing was lost | yes — one doc sentence next to `collector.seeding.episodes`. Repro: a truncated episode under a completed-only ready | **open** → library H-45 (doc) |
+| F-21 | opd collection, live | COSMETIC (recorded as evidence, not friction) | one generation request against the student endpoint hung; the episode burned its full 480 s wall, was killed and classified `infra_error`, and the collector retried the row — 10 attempted / 9 trainable, exit 0, the poison record hygiene-quarantined below every ready | a transient serving hiccup — exactly what the wall + retry + hygiene machinery exists for | none needed — the containment IS the observation | no — the machinery worked as designed (the 480 s wall dominated the run's 528 s wall-clock; without the hiccup collection is ~50 s) | recorded |
 
-1. **An index-published wheel** — the requirements one-line swap the
-   library already anticipates (install-by-URL stands in meanwhile).
-2. **Config path portability is a convention, not a mechanism** (F-13,
-   accepted-by-design): a new host still edits one root prefix across the
-   three files.
-3. **Demo-scale RLVR reward sparsity** (F-16, external): expect all-zero
-   rewards at 9 episodes on the 0.6B.
+### The three recorded runs, in numbers
+
+- **sft**: collect 9/9 completed (walls 7.2–14.4 s, total 54.2 s) → spot-check 9 clean/9 (G2 `f56e8a6e…`, G3 `a7a7956b…`, mounts=2 on every record) → 4 steps, loss 0.2371→0.2541, lag `{0: 8}` → `committed 8 = 4×2 OK; retired 8` → exit 0.
+- **opd**: collect 9/9 completed +1 infra_error retry (wall 528.2 s, F-21) → score **9/9 against the always-on teacher endpoint** (`:8101`, window 32768; zero skips — no marathon tape this run; means −0.28…−1.78; §6.2 OID `949e1ec8…` green through the endpoint pair; **no serve swap existed anywhere**) → 4 micro-batched steps, RKL +1.1004→+0.8971 → `committed 8 = 4×2 OK; retired 8` → exit 0.
+- **rlvr**: collect 9/9 completed (walls 6.5–11.0 s, total 46.2 s) → grade 9/9 with ground truth from the MCP service `/health` census (`{case_0001: 18, case_0002: 22, case_0003: 15, case_0004: 20}` — no pages tree anywhere), distribution 9 zero / 0 nonzero (2 artifacts citing nothing, 7 absent — F-16's expected sparsity, recorded honestly) → 4 degenerate REINFORCE steps (zero advantage ⇒ zero gradient, loss +0.0000) → `committed 8 = 4×2 OK; retired 8` → exit 0.
+
+### What worked without friction — the endpoint-only additions
+
+- ONE command per project did everything: collect (remote MCP under
+  per-episode JWTs, cases cloned from the staging Forgejo, pins fetched
+  sha-verified into the content-addressed cache) → attach in-process →
+  train → adapter save → exact accounting. No subprocess, no shell-out,
+  no `gsj-collect` anywhere in any `train.py`.
+- The committed taskbanks rebuilt **byte-identical** to the hosted staging
+  artifact (sha256 `9eb8e3c2…19da`) — the config's local default and its
+  commented URL alternative are provably the same bytes, and the sha pin
+  verifies the local file on every run.
+- `torch==2.13.0` from the cu129 index satisfies the freeze pin verbatim
+  AND sees CUDA on the 12.8 driver — F-05 is fully dissolved (the CP-27
+  "collector venv can't see CUDA" era is over; one torch for both halves).
+- The always-on teacher killed the serve swap: OPD's scorer read
+  `user.teacher.base_url` and scored immediately after collection, in the
+  same process — CP-27's ~6 min of swap choreography is gone.
+- The G2 docker singleton, G3 roster, and G5 cutoff held on all 27 clean
+  records across the three fresh stores, under fresh work_roots, through
+  the remote transport — zero gate failures anywhere.
+
+## What a stranger needs that doesn't exist yet — rewritten against v0.6.0 (endpoint-only)
+
+The CP-27 list burned down at v0.5.0; the CP-28 list (an index wheel, the
+path convention, reward sparsity) now reads:
+
+1. **An index-published wheel** — unchanged; the one-line swap the
+   requirements files anticipate (install-by-URL stands in).
+2. **A flat-installable collector stack** (F-18, the one real venv
+   friction left): until a constraints set is published, the venv is three
+   pip invocations, and `collector-requirements.txt` is this repo's
+   committed bridge.
+3. **A running estate** — by design, not a gap: the Forgejo host, the MCP
+   service, the two serving endpoints, and a docker daemon with the image
+   are operator infrastructure the consumer points URLs at. The prod swap
+   is those URLs, nothing else.
+4. **Config path portability stays a convention** (F-13, accepted): one
+   root prefix, edited per host.
+5. **Demo-scale RLVR reward sparsity** (F-16, external): expect all-zero
+   rewards at 9 episodes on the 0.6B — the CP-31 run reproduced it
+   exactly (9 zero / 0 nonzero).

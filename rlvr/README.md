@@ -54,4 +54,32 @@ save the adapter → print accounting.
 
 ## Recorded run (H200, 2026-08-07 — the CP-31 zero-CLI proof, v0.6.0)
 
-See the run transcript in this README's section below once recorded.
+One command, fresh store, verbatim highlights (teardown noise elided —
+FINDINGS F-19):
+
+    [collect] done: {'exit_code': 0, 'reason': 'target reached: 9/9 new trainable'}
+    [rlvr] CollectReport: exit=0 reason='target reached: 9/9 new trainable' attempted=9 new_trainable=9 counts={'completed': 9} gate_failures={} wall=46.2s
+    [rlvr] spot-check: 9 clean / 9 landed
+    [grade] page census from the MCP service /health: {'case_0001': 18, 'case_0002': 22, 'case_0003': 15, 'case_0004': 20}
+    [grade] 9 record(s) to grade in /home/sysadmin/gsj-envloader-examples/rlvr/store
+    [grade]   ep-2da91a997b0b3c68: reward=0.000 cited=0 valid=0 cutoff=9 artifact=out/ep-2da91a997b0b3c68.md
+    [grade]   ep-3a75dcb71ada1446: reward=0.000 cited=0 valid=0 cutoff=4 artifact=ABSENT
+    ...  [7 ABSENT, 2 artifacts citing nothing]
+    [grade] distribution over 9 graded: 9 zero / 0 nonzero (nonzero: [])
+    [grade] done: 0 still pending (a clean re-run grades 0 — attach is write-once)
+    [rlvr] tokenizer-hash assert OK: 949e1ec83f61520a25c75426edc4a43acc36f29a
+    [rlvr] step  0 loss +0.0000 mean_reward 0.000 adv_spread 0.000 positions 414 | lag_histogram {0: 2}
+    [rlvr] step  1 loss +0.0000 mean_reward 0.000 adv_spread 0.000 positions 632 | lag_histogram {0: 4}
+    [rlvr] step  2 loss +0.0000 mean_reward 0.000 adv_spread 0.000 positions 861 | lag_histogram {0: 6}
+    [rlvr] step  3 loss +0.0000 mean_reward 0.000 adv_spread 0.000 positions 790 | lag_histogram {0: 8}
+    [rlvr] adapter saved to /home/sysadmin/gsj-envloader-examples/rlvr/adapters/run1
+    [rlvr] consistency: committed serves = 8, steps x batch = 4 x 2 = 8 -> OK; retired 8
+
+Exit 0. **All nine rewards graded 0.0** (2 artifacts citing nothing, 7
+absent) — F-16's expected sparsity at this scale, reproduced and recorded
+honestly; training then executes the degenerate case exactly as REINFORCE
+prescribes (zero advantage, zero gradient) with exact accounting. The
+grading ground truth came from the MCP service's `/health` census — the
+same endpoint the episodes retrieved from; no pages tree exists anywhere
+in this repo anymore. Episodes finished fast this run (walls 6.5–11.0 s;
+the 900 s wall is headroom, not typical cost).

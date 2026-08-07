@@ -55,4 +55,29 @@ counts (the §7 commit-retires contract, observable).
 
 ## Recorded run (H200, 2026-08-07 — the CP-31 zero-CLI proof, v0.6.0)
 
-See the run transcript in this README's section below once recorded.
+One command (`CUDA_VISIBLE_DEVICES=6 .venv/bin/python train.py`), fresh
+store, verbatim highlights (the benign uvicorn teardown tracebacks
+elided — FINDINGS F-19):
+
+    [collect] target: {'episodes': 9, 'rounds': 1, 'train_rows': 9, 'deadline_s': 1800.0}
+    [collect] episode: {'uid': 'ep-31e486a50d5c0d11', 'finish_state': 'completed', 'gate_failures': (), 'wall_s': 8.895}
+    ...  [9 episodes, walls 7.2-14.4 s]
+    [collect] done: {'exit_code': 0, 'reason': 'target reached: 9/9 new trainable'}
+    [sft] CollectReport: exit=0 reason='target reached: 9/9 new trainable' attempted=9 new_trainable=9 counts={'completed': 9} gate_failures={} wall=54.2s
+    [sft] ep-31e486a50d5c0d11: gates=[] (G2/G3/G5 green) mounts=2 G2=f56e8a6e9ea9dd1c... G3=a7a7956b4842b79f...
+    ...  [identical on all 9 records]
+    [sft] spot-check: 9 clean / 9 landed
+    [sft] tokenizer-hash assert OK: 949e1ec83f61520a25c75426edc4a43acc36f29a
+    [sft] step  0 loss 0.2371 positions 932 | lag_histogram {0: 2}
+    [sft] step  1 loss 0.1328 positions 908 | lag_histogram {0: 4}
+    [sft] step  2 loss 0.1709 positions 760 | lag_histogram {0: 6}
+    [sft] step  3 loss 0.2541 positions 544 | lag_histogram {0: 8}
+    [sft] adapter saved to /home/sysadmin/gsj-envloader-examples/sft/adapters/run1
+    [sft] consistency: committed serves = 8, steps x batch = 4 x 2 = 8 -> OK; retired 8
+
+Exit 0. Every environment input arrived over an endpoint: cases from the
+staging Forgejo, retrieval via the remote MCP service under per-episode
+JWTs (mounts = 2: checkout + agent dir, nothing else), pins fetched
+sha-verified by the library, the committed taskbank sha-verified in
+place. The G2 docker singleton (`f56e8a6e…`) and G3 roster (`a7a7956b…`)
+reproduced on all nine records.
