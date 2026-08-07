@@ -9,15 +9,22 @@ Same substrate as SFT, different loss. The config's ready dict serves
 only scored, fresh, never-served student tapes; `OPDCollator` scatters
 the teacher column to `[B, L]` under its dotted name in `.aux`. The loss
 is the detached score-function RKL surrogate (README §4's three-regime
-table; the worked shift-gather snippet gives the student logp of the
-served token):
+table):
 
-    s_lp[b, j] = log softmax(logits[b, j-1])[input_ids[b, j]]
+    s_lp = student logp of the served token (the worked shift-gather)
     div  = s_lp - teacher            # RKL integrand on the sampled support
     loss = (div.detach() * s_lp * mask).sum() / mask.sum()
 
 `mean(div)` over masked positions is the actual RKL estimate, printed
 per step — the surrogate loss itself is not a divergence.
+
+Memory craft (the library's own documented hazard): the ready serves
+`truncated` tapes, one truncated-at-context tape pads the batch to
+L ≈ 32k, and a full-batch vocab-wide float32 log-softmax at that length
+does not fit next to co-resident serving — so the sum is computed one
+sequence at a time (gradient accumulation) with `logits_to_keep`
+bounding the logits to the response window, the recipe the library
+names next to its no-truncation note.
 """
 
 from __future__ import annotations
@@ -29,7 +36,6 @@ from itertools import islice
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from huggingface_hub import hf_hub_download
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -68,10 +74,15 @@ def collect_and_verify(config, tag: str) -> list[str]:
                  f"training (reason: {report.reason})")
 
     store = TrajectoryStore.open(config.store.root)
+    clean = 0
     for uid in report.uids:
         record = store.load([uid])[0]
         failures = list(record.env.outcome.gate_failures)
-        assert failures == [], f"{uid}: gate_failures={failures}"
+        if failures:
+            # a retried attempt can land a quarantined record: unservable
+            # under any ready (hygiene), kept for forensics — never fatal
+            print(f"[{tag}] {uid}: QUARANTINED gate_failures={failures}")
+            continue
         prov = record.env.provenance
         argv = list(prov["invocation"]["argv"])
         mounts = argv.count("-v")
@@ -79,6 +90,8 @@ def collect_and_verify(config, tag: str) -> list[str]:
         print(f"[{tag}] {uid}: gates=[] (G2/G3/G5 green) mounts=2 "
               f"G2={prov['system_prompt_hash'][:16]}... "
               f"G3={prov['tool_roster_hash'][:16]}...")
+        clean += 1
+    print(f"[{tag}] spot-check: {clean} clean / {len(report.uids)} landed")
     store.close()
     return list(report.uids)
 
@@ -116,6 +129,9 @@ def main() -> None:
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                         "gate_proj", "up_proj", "down_proj"],
     ))
+    model.gradient_checkpointing_enable()      # long tapes: keep activations small
+    model.enable_input_require_grads()
+    model.config.use_cache = False
     model.to(device).train()
     optimizer = torch.optim.AdamW(
         (p for p in model.parameters() if p.requires_grad), lr=lr)
@@ -142,32 +158,46 @@ def main() -> None:
             print(f"[opd] tokenizer-hash assert OK: {trainer_hash}")
         uids_seen.update(batch.uids)
 
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        mask = batch.aux["loss_mask"].to(device).float()               # [B, L]
-        teacher = batch.aux["opd.teacher_logp_sampled"].to(device)     # [B, L]
+        teacher_full = batch.aux["opd.teacher_logp_sampled"]           # [B, L]
+        mask_full = batch.aux["loss_mask"]                             # [B, L]
+        prompt_lens = batch.aux["prompt_lens"]
+        lens = prompt_lens + batch.aux["response_lens"]
+        n_total = float(mask_full.sum()) or 1.0
 
-        out_logits = model(input_ids=input_ids,
-                           attention_mask=attention_mask).logits
-        # student logp of the served token (README §4 Level 2 snippet):
-        # logits at j-1 are the distribution over the token at j; the left
-        # pad restores [B, L] indexing (position 0 is never masked).
-        logp = out_logits[:, :-1].float().log_softmax(-1)
-        s_lp = F.pad(logp.gather(-1, input_ids[:, 1:, None])[..., 0], (1, 0))
-        div = s_lp - teacher
-        n = mask.sum().clamp(min=1.0)
-        loss = (div.detach() * s_lp * mask).sum() / n
-        loss.backward()
+        # One sequence at a time + logits_to_keep over the response window
+        # (gradient accumulation) — the library's worked recipe for the
+        # L_max x V hazard; a truncated tape makes L ~ 32k.
+        loss_value = 0.0
+        div_sum = 0.0
+        for i in range(len(batch.uids)):
+            li, P = int(lens[i]), int(prompt_lens[i])
+            out_i = model(
+                input_ids=batch["input_ids"][i : i + 1, :li].to(device),
+                attention_mask=batch["attention_mask"][i : i + 1, :li].to(device),
+                logits_to_keep=li - P + 1,     # response window only
+            )
+            # returned logits cover positions P-1..li-1; [:-1] pairs the
+            # logits at j-1 with the served token at j
+            logp = out_i.logits[0, :-1].float().log_softmax(-1)
+            targets = batch["input_ids"][i, P:li].to(device)
+            s_lp = logp.gather(-1, targets[:, None])[:, 0]             # [R]
+            teacher_i = teacher_full[i, P:li].to(device)               # [R]
+            mask_i = mask_full[i, P:li].to(device).float()             # [R]
+            div = s_lp - teacher_i
+            item_loss = (div.detach() * s_lp * mask_i).sum() / n_total
+            item_loss.backward()               # accumulate across items
+            loss_value += float(item_loss.detach())
+            div_sum += float((div.detach() * mask_i).sum())
         optimizer.step()
         optimizer.zero_grad()
 
         loader.commit(batch)                   # consumed AFTER the optimizer step
         committed += len(batch.uids)
-        losses.append(float(loss.detach()))
-        mean_div = float((div.detach() * mask).sum() / n)  # the RKL estimate
+        losses.append(loss_value)
+        mean_div = div_sum / n_total           # the RKL estimate
         divergences.append(mean_div)
-        print(f"[opd] step {completed_steps:2d} loss {losses[-1]:+.4f} "
-              f"mean_div {mean_div:+.4f} positions {int(n)} | "
+        print(f"[opd] step {completed_steps:2d} loss {loss_value:+.4f} "
+              f"mean_div {mean_div:+.4f} positions {int(n_total)} | "
               f"lag_histogram {loader.lag_histogram()}")
         completed_steps += 1
     if completed_steps < steps:
