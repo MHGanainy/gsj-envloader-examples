@@ -14,7 +14,7 @@ needs. The training loop is the library README's five-line story
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt \
-  -r https://raw.githubusercontent.com/MHGanainy/gsj-envloader/baac10bad425b97ef45ec4d3129197f646e87360/staging/collector/collector-requirements.txt
+  -r https://raw.githubusercontent.com/MHGanainy/gsj-envloader/v0.8.0/staging/collector/collector-requirements.txt
 .venv/bin/pip install --no-deps sglang==0.5.10.post1 \
   "verl @ git+https://github.com/verl-project/uni-agent.git@73b0f41efa88b311fd69129c6f835c012e925e73#subdirectory=verl"
 ```
@@ -22,8 +22,9 @@ python3 -m venv .venv
 The collector set is the library's canonical GENERATED artifact
 (gsj-envloader CP-32 / ADR-0045 — the per-project committed copies are
 gone; the `--no-deps` line is also printed in the artifact's own header).
-The v0.7.0 raw-at-tag URL goes live with the library's CP-33 release;
-until then substitute any library commit-sha raw URL of the same path.
+Fetched at the `v0.8.0` tag — the first library release carrying the
+artifact (there is no v0.7.0; that tag was skipped). Any library
+commit-sha raw URL of the same path works identically.
 
 Prerequisites beyond that (root README): the staging estate up (Forgejo,
 MCP service `ready`, student vLLM serving), the sandbox image in the

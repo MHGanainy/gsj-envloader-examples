@@ -15,7 +15,7 @@ What each project consumes (library `docs/publishing.md` + `staging/README.md`):
 
 | input | where |
 |---|---|
-| library wheel 0.6.0 | GitHub release asset, installed by URL (see any `*/requirements.txt`) |
+| library wheel 0.8.0 | GitHub release asset, installed by URL (see any `*/requirements.txt`) |
 | sandbox image | `ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-3` (GHCR tag in the config; `pull: true` on an egress-capable host does the one pull for you) |
 | case repos | the staging Forgejo, cloned anonymously by URL at episode time (`task.clone_url_for`) |
 | retrieval | the external MCP service (`task.mcp_launch.url_base`, streamable-http, per-episode JWT) — no pages tree, no shim, nothing mounted |
@@ -107,7 +107,8 @@ non-zero is the venv build (three pip invocations, F-01's long shadow)
 and the estate itself (serving, MCP, docker are operator infrastructure).
 `FINDINGS.md` is the honest ledger.
 
-The collector artifact is fetched at a **commit-sha** raw URL, not a tag
-(F-22): the library's M8b purge moved it to `staging/collector/`, and the
-`v0.7.0` tag the previous URL named was never cut. It returns to the tag
-form when the library publishes `v0.8.0`.
+The collector artifact is fetched at the `v0.8.0` tag (F-22, closed): the
+library's M8b purge moved it to `staging/collector/`, and the `v0.7.0` tag
+the older URL named was never cut — so between CP-32 and CP-35 this repo ran
+first on a dead URL, then on a commit-sha one. `v0.8.0` is the first release
+carrying that artifact, and every URL here is now a tag URL.

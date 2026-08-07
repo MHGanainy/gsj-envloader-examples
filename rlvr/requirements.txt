@@ -3,8 +3,8 @@
 # needs only the library). The library arrives by RELEASE URL (the
 # published install-by-URL contract). When an index exists, this line
 # becomes:
-#   gsj-envloader==0.6.0
-gsj-envloader @ https://github.com/MHGanainy/gsj-envloader/releases/download/v0.6.0/gsj_envloader-0.6.0-py3-none-any.whl
+#   gsj-envloader==0.8.0
+gsj-envloader @ https://github.com/MHGanainy/gsj-envloader/releases/download/v0.8.0/gsj_envloader-0.8.0-py3-none-any.whl
 
 # Trainer stack. torch: 2.13.0 from the PyTorch cu129 index — the SAME
 # version the frozen collector set pins, in the CUDA build that runs on
