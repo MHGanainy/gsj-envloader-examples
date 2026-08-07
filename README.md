@@ -2,102 +2,104 @@
 
 Three standalone training projects — **SFT**, **OPD** (on-policy
 distillation), **RLVR** (verifiable reward) — built against the published
-artifacts of [`gsj-envloader`](https://github.com/MHGanainy/gsj-envloader)
-exactly as an external developer would: public URLs only, no access to the
-library's dev harness. Every friction hit on the way is registered in
-[`FINDINGS.md`](FINDINGS.md) — that register is the point of this repo as
-much as the code.
+artifacts and **staging endpoints** of
+[`gsj-envloader`](https://github.com/MHGanainy/gsj-envloader), exactly as
+an external developer would. Since CP-31 they are the library's
+**zero-CLI proof**: a consumer installs the wheel, edits endpoint values
+in one YAML, runs `python train.py`, and trains — no CLI invoked, no
+scripts fetched, no mounts configured, no data staged. Every friction hit
+on the way is registered in [`FINDINGS.md`](FINDINGS.md) — that register
+is the point of this repo as much as the code.
 
-The published artifacts consumed here (library `docs/publishing.md`):
+What each project consumes (library `docs/publishing.md` + `staging/README.md`):
 
-| artifact | where |
+| input | where |
 |---|---|
-| library wheel 0.5.0 | GitHub release asset, installed by URL (see any `*/requirements.txt`) |
-| sandbox image | `ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2` (anonymous pull; its baked MCP shim is named directly via `mcp_launch.in_image`) |
-| case repos | `https://github.com/MHGanainy/gsj-case-000{1..4}` (anonymous clone) |
-| page corpus | `gsj-pages-20260204.tar.gz` release asset |
-| gate pins | `gsj-pins-0.5.0.json` release asset (downloaded sha-verified by `setup_collector.sh`; dev-environment DATA — your own environment regenerates its own) |
-| render templates | package data inside the wheel (configs omit `templates_dir`) — also published standalone as `gsj-pi-templates-0.5.0.tar.gz` |
-| frozen collector deps | installed by the library's published `install_collector_env.sh` + `requirements.txt`, fetched at `v0.5.0` by `setup_collector.sh` |
+| library wheel 0.6.0 | GitHub release asset, installed by URL (see any `*/requirements.txt`) |
+| sandbox image | `ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-3` (GHCR tag in the config; `pull: true` on an egress-capable host does the one pull for you) |
+| case repos | the staging Forgejo, cloned anonymously by URL at episode time (`task.clone_url_for`) |
+| retrieval | the external MCP service (`task.mcp_launch.url_base`, streamable-http, per-episode JWT) — no pages tree, no shim, nothing mounted |
+| gate pins | the staging-inputs raw URL + sha256 in the config — fetched and cache-verified by the library itself |
+| taskbank | the committed per-project `taskbank.parquet` — **byte-identical to the hosted staging artifact** (same sha256, pinned in the config); a one-line commented alternative consumes it by URL instead |
+| render templates | package data inside the wheel (configs omit `templates_dir`) |
+| serving | the always-on student endpoint (`serving.base_url`); OPD adds the always-on teacher endpoint under `user.teacher` |
 
-## The two-environment reality
+## One venv per project (the two-environment reality is gone)
 
-Every project needs **two** python environments:
-
-1. **The collector env** (`collector-venv/`, shared, built once by
-   `./setup_collector.sh`): the uni-agent gateway stack at the pinned sha
-   plus the library wheel. It runs `gsj-collect` — the library's bounded
-   seeding tool (0.5.0) that executes sandboxed episodes and fills a
-   project's store, printing progress and exiting at the target.
-   Heavy (torch, ray, transformers — the frozen upstream set).
-2. **The trainer env** (`<project>/.venv`, per project, from that
-   project's `requirements.txt`): the library wheel + torch/transformers/
-   peft. It runs the attach job and the training loop against the store.
-
-They meet only at the store directory on disk — no RPC, by the library's
-design. The three project dirs are deliberately self-contained duplicates
-(own venv, own config, own parquet): each is meant to be readable alone.
-
-## Prerequisites
-
-- A linux x86_64 GPU host (these configs pin an H200; one free GPU for
-  training, one share of a GPU for vLLM serving), docker, python 3.12
-  (`uv` used when present), git, ~20 GB disk for venvs + models.
-- **Serving**: an OpenAI-compatible vLLM endpoint of `Qwen/Qwen3-0.6B`
-  with LoRA updating enabled, reachable at the `serving.base_url` in the
-  configs (`http://127.0.0.1:8100/v1` here). For OPD scoring the same
-  port is temporarily swapped to `Qwen/Qwen3-4B` (the teacher) with
-  prompt-logprobs available (stock vLLM has it). Serving is operator
-  infrastructure — the library connects to it, this repo does not manage it.
-- **Egress-locked hosts**: if the GPU host's docker daemon cannot reach
-  ghcr.io, load the image from any host that can:
-  `docker save ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2 | ssh <host> docker load`.
-
-## Walkthrough
-
-```bash
-git clone https://github.com/MHGanainy/gsj-envloader-examples
-cd gsj-envloader-examples
-./setup_collector.sh          # collector venv + assets (pages, pins)
-# edit */config.yaml if your checkout root differs — the configs pin
-# absolute paths (no interpolation exists, by design; one root prefix)
-```
-
-Then per project, in order (each README has the full run book):
+`collect_episodes` is a library call since 0.6.0, so the collector stack
+and the trainer stack live in the SAME venv and one `python train.py`
+drives collect → attach → train → save. The venv builds with pip alone —
+no setup script exists in this repo anymore:
 
 ```bash
 cd sft            # or opd, rlvr
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cd ..
-collector-venv/bin/gsj-collect --config sft/config.yaml     # seed: bounded, observable, stoppable
-# opd only: swap serving to the 4B, then .venv/bin/python score.py --config config.yaml
-# rlvr only: .venv/bin/python grade.py --config config.yaml
-sft/.venv/bin/python sft/train.py --config sft/config.yaml
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt -r collector-requirements.txt
+.venv/bin/pip install --no-deps sglang==0.5.10.post1 \
+  "verl @ git+https://github.com/verl-project/uni-agent.git@73b0f41efa88b311fd69129c6f835c012e925e73#subdirectory=verl"
 ```
 
-The seed step is one bounded command since library 0.5.0 (closing CP-27's
-F-08/F-14/F-17): `gsj-collect` reads its targets from the config's
-`collector.seeding` block (flags override), prints one line per episode
-plus periodic progress, exits 0 at the target or round-complete, and a
-single Ctrl-C drains in-flight episodes before exiting. The CP-27
-store-polling loop and `pkill -KILL` recipe are gone.
+Three pip invocations, not one — the honest remainder: the frozen
+collector set is not flat-installable (its sglang pin was captured
+`--no-deps`, library F-01), and verl installs `--no-deps` from the
+uni-agent repo's submodule. Everything resolves from public URLs;
+`collector-requirements.txt` is a committed, provenance-headed copy of
+the library's freeze with the sglang line removed.
+
+## Prerequisites (operator infrastructure, not this repo's job)
+
+- The staging estate up: the Forgejo case host, the MCP service
+  (`/health` → `"state": "ready"`), the **student** vLLM
+  (`Qwen/Qwen3-0.6B` at `serving.base_url`), and — for OPD — the
+  **teacher** vLLM (`Qwen/Qwen3-4B` at `user.teacher.base_url`, an
+  always-on second endpoint; the serve-swap era is over).
+- Docker with the sandbox image present (`pull: true` in the config does
+  it automatically on a host whose daemon has registry egress; this
+  estate's does not, so the image arrived by `docker save | ssh docker load`).
+- `GSJ_MCP_TOKEN_SECRET` exported in the environment running `train.py`
+  (the config carries the env var's NAME, never its value).
+- A GPU for training (pick it with `CUDA_VISIBLE_DEVICES` at invocation).
+
+## Run
+
+```bash
+cd sft            # or opd, rlvr — each README has the full run book
+export GSJ_MCP_TOKEN_SECRET=<the estate's secret>
+CUDA_VISIBLE_DEVICES=6 .venv/bin/python train.py
+```
+
+That one command collects sandboxed episodes against the staging
+endpoints (gates G1–G7, provenance, store), runs the regime's attach step
+in-process where one exists (OPD: teacher scoring against the always-on
+teacher endpoint; RLVR: verifiable grading with ground truth from the MCP
+service's own `/health` census), trains, saves the adapter, and prints
+the serve/commit accounting.
+
+**What a consumer edits** (the whole list, per config): the endpoint
+hosts (Forgejo / MCP / serving — deployment topology), the consumer-owned
+scratch paths (`store.root`, `task.work_root`, `task.episodes_root`, the
+taskbank's absolute path), and `user:` (lr/steps/out — never read by the
+library).
 
 ## The taskbank
 
 `build_taskbank.py` builds each project's `taskbank.parquet` from the
-public case repos alone — timesteps discovered live via
-`git ls-remote --heads` (one branch per historical timestep), the
-`summarize` skill prompt, eval split = `case_0004`, sandbox identity = the
-GHCR tag. 12 rows: 9 train / 3 eval per project. The parquets are
-**committed** (the repo shows its data; a reviewer needs no network) and
-**regenerable** (rerun the script after the case repos change).
+public case refs alone — timesteps discovered live via
+`git ls-remote --heads`, the `summarize` skill prompt, eval split =
+`case_0004`, sandbox identity = the GHCR tag. 12 rows: 9 train / 3 eval
+per project. The parquets are **committed** (the repo shows its data) and
+**byte-identical to the hosted staging artifact** — the same sha256 the
+configs pin, so the local default and the commented URL alternative are
+the same bytes; pick either.
 
 ## What this proves — and doesn't
 
-Everything here reaches the library through its two published faces: the
-one YAML config file (`gsj-collect`, the attach jobs, and `make_loader`
-all build from it) and the package-root import surface. CP-27 found the
-gaps (pins, templates, the frozen dependency set, a runnable seeding
-tool); the library's CP-28 (v0.5.0) closed them, and this repo's
-workarounds were **deleted** — `FINDINGS.md`'s Status column is the
-closure record.
+Everything reaches the library through its two published faces: the one
+YAML config file (`collect_episodes`, the in-process attach steps, and
+`make_loader` all build from it) and the package-root import surface.
+CP-27 found the artifact gaps, CP-28 (v0.5.0) closed them; CP-31 (v0.6.0)
+removed the CLI and the staged data — collection is a library call and
+every environment input is an endpoint or a sha-pinned URL. What remains
+non-zero is the venv build (three pip invocations, F-01's long shadow)
+and the estate itself (serving, MCP, docker are operator infrastructure).
+`FINDINGS.md` is the honest ledger.

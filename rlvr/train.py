@@ -1,33 +1,33 @@
 #!/usr/bin/env python3
-"""RLVR over served gsj-envloader trajectories — written from the library
-README §4 by an external consumer.
+"""RLVR, zero-CLI: ONE `python train.py` collects episodes against the
+staging estate (in-process), grades the deliverables (in-process —
+`grade.grade(config)`, ground truth from the MCP service's /health
+census), and trains. Written from the library README §4 by an external
+consumer.
 
-Third regime, same substrate: `grade.py` attached the verifiable scalar
-(`rlvr.reward`); the config's ready dict serves only graded, fresh,
-never-served tapes; `RLVRCollator` stacks the reward into
-`aux["rewards"] [B]`. The loss is REINFORCE-style advantage-weighted CE
-(README §4's three-regime table):
+Third regime, same substrate: the graded scalar rides `rlvr.reward`; the
+config's ready dict serves only graded, fresh, never-served tapes;
+`RLVRCollator` stacks the reward into `aux["rewards"] [B]`. The loss is
+REINFORCE-style advantage-weighted CE (README §4's three-regime table):
 
     adv  = rewards - rewards.mean()          # batch-mean baseline, [B]
     ce   = -log softmax(logits)[served token]
     loss = (adv[:, None] * ce * loss_mask).sum() / loss_mask.sum()
 
-Memory craft, learned the hard way: a 900 s wall can produce a
-truncated-at-context tape (R ~ 30k), and the collated batch pads every
-row to that length — a full-batch vocab-wide float32 log-softmax at
-L=32k does NOT fit next to a co-resident serving engine. So the sum is
-computed one sequence at a time (gradient accumulation) with
-`logits_to_keep` bounding the logits to the response window, and
+Memory craft: a 900 s wall can produce a truncated-at-context tape
+(R ~ 30k) and the collated batch pads to it — a full-batch vocab-wide
+float32 log-softmax at L=32k does not fit next to co-resident serving.
+So the sum is computed one sequence at a time (gradient accumulation)
+with `logits_to_keep` bounding the logits to the response window, and
 zero-advantage items skipped outright (their REINFORCE gradient is
-exactly zero). The library README warns that length budgeting is trainer
-craft; the concrete L x V hazard it leaves to us.
-
-    .venv/bin/python train.py --config config.yaml
+exactly zero).
 """
 
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 from itertools import islice
 from pathlib import Path
 
@@ -40,15 +40,55 @@ from gsj.envloader import (
     RLVRCollator,
     TrajectoryStore,
     check_tokenizer,
+    collect_episodes,
     load_config,
     make_loader,
 )
 
+import grade as grader
+
+
+def collect_event(event: dict) -> None:
+    kind = event.get("type")
+    rest = {k: v for k, v in event.items() if k != "type"}
+    print(f"[collect] {kind}: {rest}", flush=True)
+
+
+def collect_and_verify(config, tag: str) -> list[str]:
+    secret_name = config.task.mcp_launch.token_secret
+    if secret_name and not os.environ.get(secret_name):
+        sys.exit(f"[{tag}] {secret_name} is not set — the MCP service tokens "
+                 f"are minted from it (export it, then rerun)")
+
+    report = collect_episodes(config, progress=collect_event)
+    print(f"[{tag}] CollectReport: exit={report.exit_code} "
+          f"reason={report.reason!r} attempted={report.attempted} "
+          f"new_trainable={report.new_trainable} counts={report.counts} "
+          f"gate_failures={report.gate_failures} wall={report.wall_s:.1f}s")
+    if report.new_trainable == 0:
+        sys.exit(f"[{tag}] no trainable episodes landed — aborting before "
+                 f"training (reason: {report.reason})")
+
+    store = TrajectoryStore.open(config.store.root)
+    for uid in report.uids:
+        record = store.load([uid])[0]
+        failures = list(record.env.outcome.gate_failures)
+        assert failures == [], f"{uid}: gate_failures={failures}"
+        prov = record.env.provenance
+        argv = list(prov["invocation"]["argv"])
+        mounts = argv.count("-v")
+        assert mounts == 2, f"{uid}: {mounts} mounts (want 2)"
+        print(f"[{tag}] {uid}: gates=[] (G2/G3/G5 green) mounts=2 "
+              f"G2={prov['system_prompt_hash'][:16]}... "
+              f"G3={prov['tool_roster_hash'][:16]}...")
+    store.close()
+    return list(report.uids)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--model", default="Qwen/Qwen3-0.6B")
+    parser.add_argument("--config", type=Path,
+                        default=Path(__file__).resolve().parent / "config.yaml")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -57,12 +97,22 @@ def main() -> None:
     lr = float(user.get("lr", 1e-4))
     out = args.config.parent / user.get("out", "adapters/run1")
 
+    # ---- collect (in-process), then grade (in-process) ----
+    collect_and_verify(config, "rlvr")
+    summary = grader.grade(config)
+    if summary["graded"] == 0:
+        sys.exit("[rlvr] nothing graded — the ready dict would starve; aborting")
+
+    # ---- train ----
     loader = make_loader(config)               # ready arrives as data
     timeout_s = config.loader.timeout_s if config.loader.timeout_s is not None else 20.0
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(0)
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16)
+    model_id = str(config.driver["model_id"])
+    revision = str(config.driver["revision"])
+    model = AutoModelForCausalLM.from_pretrained(model_id, revision=revision,
+                                                 dtype=torch.bfloat16)
     model = get_peft_model(model, LoraConfig(
         r=8, lora_alpha=16, lora_dropout=0.0, bias="none", task_type="CAUSAL_LM",
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
@@ -75,16 +125,12 @@ def main() -> None:
     optimizer = torch.optim.AdamW(
         (p for p in model.parameters() if p.requires_grad), lr=lr)
 
-    # pinned to the codec's snapshot revision (driver.snapshot_path basename)
-    # so the §6.2 assert cannot break on an upstream HF main push
-    revision = (Path(str(config.driver["snapshot_path"])).name
-                if "snapshot_path" in config.driver else None)
-    tokenizer = AutoTokenizer.from_pretrained(args.model, revision=revision)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, revision=revision)
     pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
-    tokenizer_json = Path(hf_hub_download(args.model, "tokenizer.json",
+    tokenizer_json = Path(hf_hub_download(model_id, "tokenizer.json",
                                           revision=revision))
 
-    print(f"[rlvr] device={device.type} model={args.model} steps={steps} "
+    print(f"[rlvr] device={device.type} model={model_id} steps={steps} "
           f"batch_size={config.loader.batch_size}")
 
     losses: list[float] = []
@@ -151,14 +197,16 @@ def main() -> None:
 
     store = TrajectoryStore.open(config.store.root)
     print("\n=== serve/commit accounting ===")
+    retired = 0
     for uid in sorted(uids_seen):
         view = store.view(uid)
+        retired += int(bool(view["consumed"]))
         print(f"  {uid}  serve_count={view['serve_count']} "
               f"retired={bool(view['consumed'])}")
     expected = completed_steps * config.loader.batch_size
     print(f"[rlvr] consistency: committed serves = {committed}, steps x batch = "
           f"{completed_steps} x {config.loader.batch_size} = {expected} -> "
-          f"{'OK' if committed == expected else 'MISMATCH'}")
+          f"{'OK' if committed == expected else 'MISMATCH'}; retired {retired}")
     store.close()
 
 

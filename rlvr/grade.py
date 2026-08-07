@@ -1,12 +1,13 @@
-#!/usr/bin/env python3
-"""Verifiable-reward grading — the RLVR attach job, written from the
+"""Verifiable-reward grading — the RLVR attach step, in-process (CP-31: an
+importable function `train.py` calls, not a CLI). Written from the
 library README §4 Level 2 by an external consumer.
 
-The reward is verifiable from public inputs alone: the episode's
-deliverable cites pages as `page:N` (the case repos' AGENTS.md
-convention), and we score citations against (a) the case's page count —
-derived by counting the page corpus this repo already carries
-(`assets/pages/<case_id>/page_*.md`) — and (b) the row's timestep cutoff:
+The reward is verifiable from ENDPOINTS alone: the episode's deliverable
+cites pages as `page:N` (the case repos' AGENTS.md convention), scored
+against (a) the case's page count — read from the MCP service's own
+public `/health` census (the same service the episodes retrieved from;
+no shipped pages tree exists in the endpoint-only world) — and (b) the
+row's timestep cutoff:
 
     reward = citations within cutoff / max(total citations, 1)
 
@@ -19,40 +20,39 @@ Artifact resolution: the record carries only the checkout-relative
 harvest — the durable copy lives under the episode forensics dir,
 `<task.episodes_root>/<uid>/harvest/`, which the SAME config file names.
 
-Offline (no GPU, no serving):  .venv/bin/python grade.py --config config.yaml
 Idempotent: attach is write-once; a clean re-run grades 0.
 """
 
 from __future__ import annotations
 
-import argparse
+import json
 import re
+import urllib.request
 from pathlib import Path
 
-from gsj.envloader import TrajectoryStore, load_config
+from gsj.envloader import TrajectoryStore
 
 CITATION = re.compile(r"page:(\d+)")
 GRADE_WHERE = {"env.outcome.finish_state": {"in": ["completed", "truncated"]}}
 
 
-def page_counts(pages_root: Path) -> dict[str, int]:
-    """case_id -> page count, from the corpus tree itself."""
-    counts: dict[str, int] = {}
-    for case_dir in sorted(pages_root.iterdir()):
-        if case_dir.is_dir():
-            counts[case_dir.name] = len(list(case_dir.glob("page_*.md")))
+def page_counts_from_service(url_base: str) -> dict[str, int]:
+    """case_id -> page count, from the MCP service's /health census."""
+    url = f"{url_base.rstrip('/')}/health"
+    with urllib.request.urlopen(url, timeout=10) as response:
+        health = json.load(response)
+    cases = health.get("cases") or {}
+    counts = {case_id: int(info["pages"]) for case_id, info in cases.items()}
     if not counts:
-        raise SystemExit(f"no case dirs under {pages_root}")
+        raise RuntimeError(f"{url}: no case census in /health "
+                           f"(state={health.get('state')!r})")
     return counts
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, required=True)
-    args = parser.parse_args()
-
-    config = load_config(args.config)
-    counts = page_counts(Path(config.task.mcp_launch.pages_root))
+def grade(config) -> dict:
+    """Grade every ungraded trainable record; returns a summary dict."""
+    counts = page_counts_from_service(str(config.task.mcp_launch.url_base))
+    print(f"[grade] page census from the MCP service /health: {counts}")
     episodes_root = Path(config.task.episodes_root)
 
     store = TrajectoryStore.open(config.store.root)
@@ -78,9 +78,10 @@ def main() -> None:
             "n_cited": len(cited),
             "n_valid": n_valid,
             "grader_meta": {"grader": "cited-pages-within-cutoff",
+                            "ground_truth": "mcp-service /health census",
                             "case": md["case_repo_id"],
                             "timestep": int(md["timestep"]), "cutoff": cutoff,
-                            "artifact": rel, "v": 1},
+                            "artifact": rel, "v": 2},
         }, complete=True)
         rewards.append(reward)
         print(f"[grade]   {uid}: reward={reward:.3f} cited={len(cited)} "
@@ -94,7 +95,4 @@ def main() -> None:
     print(f"[grade] done: {len(remaining)} still pending "
           f"(a clean re-run grades 0 — attach is write-once)")
     store.close()
-
-
-if __name__ == "__main__":
-    main()
+    return {"graded": len(rewards), "zeros": zeros, "rewards": rewards}

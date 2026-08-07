@@ -1,28 +1,26 @@
-#!/usr/bin/env python3
-"""Teacher scoring — the OPD attach job, written from the library README §4
+"""Teacher scoring — the OPD attach step, in-process (CP-31: an importable
+function `train.py` calls, not a CLI). Written from the library README §4
 Level 2 ("query what is missing, compute, attach write-once") by an
 external consumer.
 
 Per unscored trainable record: assert the teacher tokenizes identically
 (§6.2 — one `git_blob_oid` call against the served provenance), request
 the teacher's per-token logprobs over the record's exact `input_ids` via
-the served endpoint's prompt-logprobs capability (vLLM: the
-`prompt_logprobs` extra body param on /v1/completions with a token-id
-prompt), slice the response span, attach as full-R float32
-`opd.teacher_logp_sampled` with `complete=True`.
+the ALWAYS-ON teacher endpoint (`user.teacher.base_url` — no serve swap
+exists anymore; vLLM's `prompt_logprobs` extra body param on
+/v1/completions with a token-id prompt), slice the response span, attach
+as full-R float32 `opd.teacher_logp_sampled` with `complete=True`.
 
 Idempotent by construction: attach is write-once and the query's
 `missing=` excludes already-scored records — a clean re-run scores 0.
 
-Run AFTER swapping the serving endpoint to the teacher (Qwen3-4B here;
-`user.teacher` in config.yaml pins its identity):
-
-    .venv/bin/python score.py --config config.yaml
+The +1-generation-slot pre-check (library H-37): a tape whose P+R equals
+the teacher window cannot be scored through the API — skipped loudly; the
+record stays pending and the ready dict walls it off.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import urllib.request
 from pathlib import Path
@@ -30,7 +28,7 @@ from pathlib import Path
 import numpy as np
 from huggingface_hub import hf_hub_download
 
-from gsj.envloader import TrajectoryStore, git_blob_oid, load_config
+from gsj.envloader import TrajectoryStore, git_blob_oid
 
 # Trainable, hygiene-clean, student-behavior records only. (Hygiene —
 # infra_error / gate failures — is already below every store query.)
@@ -51,7 +49,7 @@ def served_model(endpoint: str) -> tuple[str, int | None]:
     with urllib.request.urlopen(f"{endpoint}/models", timeout=10) as response:
         data = json.load(response)["data"]
     if not data:
-        raise SystemExit("serving endpoint lists no models")
+        raise RuntimeError("teacher endpoint lists no models")
     return data[0]["id"], data[0].get("max_model_len")
 
 
@@ -65,8 +63,8 @@ def teacher_logps(endpoint: str, model: str, ids: list[int]) -> list[float | Non
     })
     rows = body["choices"][0].get("prompt_logprobs")
     if rows is None:
-        raise SystemExit("endpoint returned no prompt_logprobs — not vLLM, or "
-                         "the capability is disabled")
+        raise RuntimeError("endpoint returned no prompt_logprobs — not vLLM, "
+                           "or the capability is disabled")
     out: list[float | None] = []
     for position, row in enumerate(rows):
         if row is None:
@@ -74,24 +72,19 @@ def teacher_logps(endpoint: str, model: str, ids: list[int]) -> list[float | Non
             continue
         key = str(ids[position])
         if key not in row:
-            raise SystemExit(f"position {position}: token {key} missing from "
-                             f"prompt_logprobs row")
+            raise RuntimeError(f"position {position}: token {key} missing "
+                               f"from prompt_logprobs row")
         out.append(float(row[key]["logprob"]))
     return out
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--endpoint", default=None,
-                        help="teacher endpoint (default: serving.base_url from "
-                             "the config — the teacher is served on the same "
-                             "port after the swap)")
-    args = parser.parse_args()
-
-    config = load_config(args.config)
-    endpoint = (args.endpoint or config.serving.base_url).rstrip("/")
-    teacher = config.user.get("teacher", {})
+def score(config) -> dict:
+    """Score every unscored trainable record; returns a summary dict."""
+    teacher = config.user.get("teacher") or {}
+    endpoint = str(teacher.get("base_url", "")).rstrip("/")
+    if not endpoint:
+        raise RuntimeError("user.teacher.base_url missing — the always-on "
+                           "teacher endpoint is this project's convention")
     teacher_id = teacher.get("model_id", "Qwen/Qwen3-4B")
     teacher_rev = teacher.get("revision")
 
@@ -101,7 +94,8 @@ def main() -> None:
     teacher_hash = git_blob_oid(tokenizer_json)
     model, max_model_len = served_model(endpoint)
     print(f"[score] teacher {teacher_id}@{teacher_rev} served as {model!r} "
-          f"(window {max_model_len}); tokenizer OID {teacher_hash}")
+          f"at {endpoint} (window {max_model_len}); "
+          f"tokenizer OID {teacher_hash}")
 
     store = TrajectoryStore.open(config.store.root)
     uids = store.query(missing="opd._complete", where=SCORE_WHERE)
@@ -114,19 +108,18 @@ def main() -> None:
     for uid, record in zip(uids, store.load(uids)):
         served_hash = record.env.provenance["codec"]["tokenizer_hash"]
         if served_hash != teacher_hash:
-            raise SystemExit(f"tokenizer mismatch (§6.2): teacher {teacher_hash}"
-                             f" != served {served_hash} (uid {uid})")
+            store.close()
+            raise RuntimeError(f"tokenizer mismatch (§6.2): teacher "
+                               f"{teacher_hash} != served {served_hash} "
+                               f"(uid {uid})")
         P, R = len(record.prompts), len(record.responses)
         # The completions route spends one generation slot (max_tokens=1;
-        # max_tokens=0 is rejected), so a tape AT the serving window cannot
-        # be scored through the API — learned live on a context-truncated
-        # tape (P+R = the window). Skip loudly; the record stays pending
-        # (never satisfies opd._complete, so the ready dict walls it off).
+        # max_tokens=0 is rejected) — a tape AT the teacher window cannot
+        # be scored through the API. Skip loudly; the record stays pending.
         if max_model_len is not None and P + R + 1 > max_model_len:
-            print(f"[score]   {uid}: SKIPPED — P+R+1 = {P + R + 1} exceeds the "
-                  f"teacher window {max_model_len} (the +1 is the API's "
-                  f"generation slot); needs a local-prefill fallback or a "
-                  f"larger serving window")
+            print(f"[score]   {uid}: SKIPPED — P+R+1 = {P + R + 1} exceeds "
+                  f"the teacher window {max_model_len} (the +1 is the API's "
+                  f"generation slot)")
             skipped.append(uid)
             continue
         try:
@@ -153,10 +146,4 @@ def main() -> None:
     print(f"[score] done: scored {len(means)}; {len(remaining)} still pending "
           f"(a clean re-run retries exactly those — attach is write-once)")
     store.close()
-    if skipped:
-        raise SystemExit(f"{len(skipped)} record(s) not scored (listed above); "
-                         f"they stay pending and unserved")
-
-
-if __name__ == "__main__":
-    main()
+    return {"scored": len(means), "skipped": skipped, "means": means}

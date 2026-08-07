@@ -1,111 +1,97 @@
-# sft/config.yaml — ONE file constructs both sides (library §9 / ADR-0037):
-# the collector process (`collector-venv/bin/gsj-collect --config
-# sft/config.yaml` — the bounded seeding tool, library 0.5.0) and the
-# trainer's loader (`train.py --config sft/config.yaml` via load_config +
-# make_loader). Field reference: library docs/config-reference.md. Library
-# sections validate strictly — an unknown key dies at load; `user:` is the
-# free-form developer half.
+# =========================================================================
+# sft/config.yaml — endpoint-only (CP-31 of the library's M7 staging arc)
+# =========================================================================
+# ONE file drives everything `python train.py` does (library §9 realized:
+# `collect_episodes(config)` seeds the store IN-PROCESS — no CLI — and
+# `make_loader(config)` serves it). Derived from the library's reference
+# consumer config, staging/config.staging.yaml. Field reference:
+# docs/config-reference.md. Every environment input is an endpoint or a
+# sha-pinned artifact:
 #
-# HOST-BOUND VALUES: this file pins the recorded-run host (the H200,
-# repo cloned at /home/sysadmin/gsj-envloader-examples). No env-var
-# interpolation exists — a new host means editing the absolute paths
-# below (one root prefix; since 0.5.0 the codec source is the portable
-# driver {model_id, revision} pair, so nothing else re-resolves).
+#   cases     -> staging Forgejo clone URLs (the frozen dataset)
+#   pins      -> staging-inputs raw URL + sha256
+#   taskbank  -> the COMMITTED per-project parquet (byte-identical to the
+#                hosted staging artifact — same sha256; URL alternative
+#                commented in place)
+#   retrieval -> the external MCP service URL (per-episode JWT, remote)
+#   image     -> the published GHCR tag
+#   serving   -> the always-on student vLLM endpoint
+#
+# What a consumer edits (the whole list):
+#   1. endpoint hosts (Forgejo, MCP service, serving) — deployment topology;
+#   2. the consumer-owned scratch paths (store.root, task.work_root,
+#      task.episodes_root) + the taskbank's absolute path;
+#   3. user: (lr/steps/out — the developer's half; never read by the library).
 
 store:
-  # Trajectories land here (parquet payloads + store.sqlite bookkeeping).
+  # Consumer-owned scratch: the store is created here.
   root: /home/sysadmin/gsj-envloader-examples/sft/store
   config:
-    # 1 = the §7 posture: a record retires on its first committed serve.
-    # Raise for N epoch-fair passes over a static store; the SPI brake
-    # auto-scales with it (2.0 x N).
-    max_serves_per_record: 1
+    max_serves_per_record: 1     # §7 posture: retire on first committed serve
 
 task:
-  # The episode lifecycle: checkout -> gates -> pi (in docker) -> harvest.
-  # Checkouts land under <work_root>/<case_id>. In docker mode the
-  # in-container path is a constant /workspace, so the G2 system-prompt
-  # pin is host-path-independent (the pins/ copy carries that singleton).
+  # Consumer-owned scratch: per-case checkouts + per-episode forensics.
   work_root: /home/sysadmin/gsj-envloader-examples/sft/work
-  # Per-episode forensics (harvested deliverables, logs). Parked inside
-  # the store root so trained-from artifacts travel with the store.
   episodes_root: /home/sysadmin/gsj-envloader-examples/sft/store/episodes
-  # templates_dir: OMITTED — the .pi render templates ship as package data
-  # inside the 0.5.0 wheel (library default_templates_dir()); the CP-27
-  # raw-fetch workaround is deleted.
-  # case_id -> clone URL. The public mirrors' repo slug (gsj-case-NNNN)
-  # differs from the case id (case_NNNN), so this is the explicit-mapping
-  # form, not a {case_id} pattern.
-  clone_url_for:
-    case_0001: https://github.com/MHGanainy/gsj-case-0001.git
-    case_0002: https://github.com/MHGanainy/gsj-case-0002.git
-    case_0003: https://github.com/MHGanainy/gsj-case-0003.git
-    case_0004: https://github.com/MHGanainy/gsj-case-0004.git
+  # templates_dir OMITTED: the render templates ship as wheel package data.
+  #
+  # The frozen case dataset, cloned by URL from the staging Forgejo
+  # (anonymous read; repo paths + ref->SHAs are the frozen contract).
+  clone_url_for: "http://172.28.9.10:3000/gsj-admin/{case_id}.git"
   pi_launch:
-    # REQUIRED by the schema but UNUSED in docker mode — the runner execs
-    # the image's own baked entry/extension (task.docker.container_pi_*
-    # defaults). Values here are the in-image paths, as documentation;
-    # see FINDINGS.md (required-but-unused fields).
+    # Schema-required but DEAD in docker mode (library H-33): the container
+    # runs its own baked paths. In-image values kept as self-documentation.
     entry: /opt/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
     extension: /opt/pi/node_modules/pi-mcp-extension/src/index.ts
-    model_id: Qwen/Qwen3-0.6B      # who acts — the served model requests route to
+    model_id: Qwen/Qwen3-0.6B    # who acts — must match serving.model
     context_window: 32768
   mcp_launch:
-    # python: same story — docker mode uses the in-image /opt/mcp-venv.
-    python: /opt/mcp-venv/bin/python
-    # server: the image's own baked shim, named directly — in_image: true
-    # (library 0.5.0, H-28 closed) suppresses the /opt/gsj-mcp bind mount
-    # and renders this path verbatim. The CP-27 docker-cp extraction
-    # workaround is deleted.
-    server: /opt/gsj-mcp/server.py
-    in_image: true
-    # The page corpus the MCP serves (release tarball, extracted).
-    pages_root: /home/sysadmin/gsj-envloader-examples/assets/pages
-  # The pinned 11-tool roster (G3 hashes the rendered roster).
+    # Retrieval is an ENDPOINT: the external MCP service (streamable-http),
+    # per-episode JWT minted at render, URL rewritten for the container by
+    # the library. No pages_root, no server path, no in_image — the
+    # stdio-shim world is gone.
+    transport: streamable-http
+    url_base: "http://127.0.0.1:8790"
+    # The NAME of the env var holding the HMAC secret — never a value in
+    # this file. Export GSJ_MCP_TOKEN_SECRET before `python train.py`.
+    token_secret: GSJ_MCP_TOKEN_SECRET
+    token_ttl_s: 3600
   tools_allowlist:
     [read, ls, grep, find, write, edit, bash,
      mcp_gsj_search_case, mcp_gsj_search_decisions,
      mcp_gsj_case_status, mcp_gsj_decision_stats]
   budgets:
-    wall_timeout_s: 480.0          # per-episode hard wall; overrun => infra_error
-  execution: docker                # one ephemeral sandbox container per episode
+    wall_timeout_s: 480.0
+  execution: docker
   docker:
-    image: ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2
+    # The published staging image, by GHCR tag. This H200's dockerd has no
+    # registry egress, so the image arrived by docker save|load and pull
+    # stays false; an egress-capable host sets pull: true for one automatic
+    # pull before the first episode.
+    image: ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-3
+    pull: false
 
 collector:
-  # Provenance identity (stamped into every record) + sampling + thermostat.
-  # harness_image should equal task.docker.image in docker mode — it is
-  # what env.provenance.harness_image records.
-  harness_image: ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2
+  # Provenance statics — recorded into every episode.
+  harness_image: ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-3
   pi_version: "0.83.0"
   uniagent_sha: 73b0f41efa88b311fd69129c6f835c012e925e73
-  collector_run_id: stranger-sft
-  # Gate fingerprints — the published dev pins (release asset
-  # gsj-pins-0.5.0.json, downloaded sha-verified by setup_collector.sh).
-  # Dev-environment DATA: your own artifacts get your own pins (gsj-pin).
-  # The CP-27 committed source-tree copy (pins/) is deleted.
-  pins_path: /home/sysadmin/gsj-envloader-examples/assets/pins.dev.json
-  # Per-request sampling blocks: student (this run's behavior), teacher
-  # (deferred upstream — no teacher behavior executes in 0.4.0), eval
-  # (the frozen §6.3 block, auto-routed to eval-split rows).
+  collector_run_id: zero-cli-sft
+  # The staging gate pins, consumed BY URL with the sha256 pin: integrity
+  # enforced, fetch content-addressed-cached. Pins are environment-specific
+  # DATA — a different estate regenerates its own (gsj-pin).
+  pins_path: "http://172.28.9.10:3000/gsj-admin/staging-inputs/raw/branch/main/pins.staging.json"
+  pins_sha256: bfa66b262765c57f5c662d9845860d003c7b0cf72e596b47a6005a537e12598b
   sampling_student: {temperature: 0.6, top_p: 0.95, top_k: 20}
-  sampling_teacher: {}
   sampling_eval: {temperature: 0.6, top_p: 0.95, top_k: 20}
-  concurrency: 2                   # concurrent episode dispatch
-  # Seeding provisioning (library 0.5.0 — the canonical schema home; CLI
-  # flags override): gsj-collect targets 9 NEW trainable episodes, stops
-  # at the 1800 s deadline with what landed, and drains up to 600 s
-  # (> the 480 s episode wall) after a first Ctrl-C so in-flight episodes
-  # finish. This replaces the CP-27 store-polling + pkill recipe.
+  concurrency: 2
   seeding:
+    # collect_episodes(config) reads these (args > collector.seeding >
+    # user.seeding): 9 NEW trainable episodes, bounded by the deadline.
     episodes: 9
     deadline_s: 1800
-    drain_s: 600
 
 rollout:
-  # One round = target_completions_per_row x train rows (9 here) = 9
-  # trainable episodes; gsj-collect exits at the seeding target or at
-  # round-complete, whichever the invocation asks for.
   behavior: student
   target_completions_per_row: 1
   max_attempts_per_row: 3
@@ -113,42 +99,38 @@ rollout:
   seed: 0
 
 taskbank:
-  # The committed bank (build_taskbank.py regenerates it from the public
-  # case repos). 12 rows: 9 train / 3 eval (case_0004 is eval).
+  # DEFAULT: the committed per-project bank — the repo shows its data
+  # (12 rows: 9 train / 3 eval, case_0004 = eval; ../build_taskbank.py
+  # regenerates it from the public case refs). The sha256 pin verifies the
+  # LOCAL file too, and it equals the hosted staging artifact's sha —
+  # local vs URL are the same bytes; pick either. The URL alternative:
+  # path: "http://172.28.9.10:3000/gsj-admin/staging-inputs/raw/branch/main/taskbank.parquet"
   path: /home/sysadmin/gsj-envloader-examples/sft/taskbank.parquet
+  sha256: 9eb8e3c2d3760b9b74c4cda20394fd54bd12f95e78d397dbd40631f801eb19da
 
 serving:
-  # The OpenAI-compatible student endpoint (vLLM here). The library opens
-  # no connection itself — the collector's driver generates against it.
+  # The always-on student endpoint (staging estate; loopback forward).
   base_url: http://127.0.0.1:8100/v1
   model: Qwen/Qwen3-0.6B
 
 driver:
-  # uniagent-driver config (open mapping). The codec source is the
-  # host-portable {model_id, revision} pin pair (library 0.5.0, H-27
-  # closed): the driver resolves it through the HF cache at first run
-  # (download on a miss). The CP-27 hand-pasted snapshot_path is deleted.
+  # Host-portable codec pin pair, resolved through the HF cache.
   model_id: Qwen/Qwen3-0.6B
   revision: c1899de289a04d12100db370d81485cdf75e47ca
 
 loader:
-  # The trainer side, from the SAME file (make_loader reads this).
+  # The trainer half of the same file.
   batch_size: 2
-  poll_s: 0.25                     # small store: poll faster than the 0.5 default
+  poll_s: 0.25
   starve_log_every: 8
-  timeout_s: 20.0                  # bounded wait; run-dry ends iteration
+  timeout_s: 30.0
   ready:
     # SFT's serving predicate: completed episodes only. Hygiene
-    # (infra_error, gate failures) is applied BELOW any ready by the
-    # library; excluding `truncated` is this regime's distribution choice.
+    # (infra_error, gate failures) applies BELOW any ready, always.
     env.outcome.finish_state: completed
 
 user:
-  # The developer's half — validated as a mapping, never read by the
-  # library. train.py reads lr/steps/out. (The CP-27 user.seeding
-  # convention is superseded: collector.seeding above is the canonical
-  # schema home since library 0.5.0; user.seeding would still be honored,
-  # below it.)
+  # The developer's half — never read by the library; train.py reads these.
   lr: 1.0e-4
   steps: 4
   out: adapters/run1

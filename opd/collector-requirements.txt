@@ -1,0 +1,121 @@
+# collector-requirements.txt — the collection half of this project's ONE venv.
+#
+# A committed, filtered copy of the library's frozen collector set
+# (devharness/uniagent/requirements.txt at gsj-envloader v0.6.0 — the CP-05
+# freeze behind env.provenance.uniagent_sha 73b0f41e...), with the sglang
+# pin REMOVED: the freeze is not flat-installable — its sglang pin was
+# captured --no-deps, and full resolution collides with the frozen openai
+# pin (library F-01/H-30). The venv completes with ONE extra pip line
+# (README "Prepare"):
+#
+#   .venv/bin/pip install --no-deps sglang==0.5.10.post1 \
+#     "verl @ git+https://github.com/verl-project/uni-agent.git@73b0f41efa88b311fd69129c6f835c012e925e73#subdirectory=verl"
+#
+# uni-agent itself is the last line below (git direct reference — GitHub
+# source at the pinned sha is its only channel: no PyPI dist, no tags).
+# torch==2.13.0 below is satisfied by requirements.txt's cu129 build
+# (2.13.0+cu129): ONE torch, CUDA-working on this host, shared by the
+# collection and training halves.
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
+annotated-doc==0.0.5
+annotated-types==0.8.0
+antlr4-python3-runtime==4.9.3
+anyio==4.14.2
+asttokens==3.0.2
+attrs==26.1.0
+cachetools==7.1.7
+certifi==2026.7.22
+charset-normalizer==3.4.9
+click==8.4.2
+cloudpickle==3.1.2
+codetiming==1.4.0
+distro==1.9.0
+executing==2.2.1
+fastapi==0.141.1
+filelock==3.32.2
+frozenlist==1.8.0
+fsspec==2026.7.0
+h11==0.16.0
+hf-xet==1.6.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+huggingface_hub==1.26.0
+idna==3.18
+importlib_metadata==9.0.0
+interegular==0.3.3
+ipython_pygments_lexers==1.1.1
+ipython==9.16.1
+jedi==0.20.0
+Jinja2==3.1.6
+jiter==0.16.0
+jsonschema-specifications==2025.9.1
+jsonschema==4.26.0
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+matplotlib-inline==0.2.2
+mdurl==0.1.2
+mpmath==1.3.0
+msgpack==1.2.1
+msgspec==0.21.1
+multidict==6.7.1
+networkx==3.6.1
+numpy==2.5.1
+omegaconf==2.3.1
+openai==2.53.0
+orjson==3.11.9
+outlines_core==0.2.14
+packaging==26.3
+parso==0.8.7
+partial-json-parser==0.2.1.1.post7
+pexpect==4.9.0
+pillow==12.3.0
+prompt_toolkit==3.0.53
+propcache==0.5.2
+protobuf==7.35.1
+psutil==7.2.2
+ptyprocess==0.7.0
+pure_eval==0.2.3
+pybase64==1.4.3
+pydantic_core==2.46.4
+pydantic==2.13.4
+Pygments==2.20.0
+pylatexenc==2.11
+python-dotenv==1.2.2
+pyvers==0.2.3
+PyYAML==6.0.3
+pyzmq==27.1.0
+ray==2.56.1
+referencing==0.37.0
+regex==2026.7.19
+requests==2.34.2
+rich==15.0.0
+rpds-py==2026.6.3
+safetensors==0.8.0
+setproctitle==1.3.7
+setuptools==83.0.0
+shellingham==1.5.4
+sniffio==1.3.1
+stack-data==0.6.3
+starlette==1.3.1
+sympy==1.14.0
+tensordict==0.13.0
+tokenizers==0.22.2
+torch==2.13.0
+tqdm==4.70.0
+traitlets==5.16.1
+transformers==5.14.1
+typer==0.27.1
+typing_extensions==4.16.0
+typing-inspection==0.4.2
+urllib3==2.7.0
+uvicorn==0.52.1
+uvloop==0.22.1
+watchfiles==1.2.0
+wcwidth==0.8.2
+websockets==17.0.1
+yarl==1.24.5
+zipp==4.1.0
+uni-agent @ git+https://github.com/verl-project/uni-agent.git@73b0f41efa88b311fd69129c6f835c012e925e73

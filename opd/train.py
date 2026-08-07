@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
-"""OPD over served gsj-envloader trajectories — written from the library
-README §4 by an external consumer.
+"""OPD, zero-CLI: ONE `python train.py` collects episodes against the
+staging estate (in-process), teacher-scores them against the ALWAYS-ON
+teacher endpoint (in-process — `score.score(config)`, no serve swap, no
+CLI), and trains. Written from the library README §4 by an external
+consumer.
 
-Same substrate as SFT, different loss. Upstream, `score.py` attached the
-teacher's per-token logp (`opd.teacher_logp_sampled`); the config's ready
-dict serves only scored, fresh, never-served student tapes. `OPDCollator`
-scatters the teacher column to `[B, L]` under its dotted name in `.aux`.
-
-The loss is the detached score-function RKL surrogate (README §4's
-three-regime table; the worked shift-gather snippet in §4 Level 2 gives
-the student logp of the served token):
+Same substrate as SFT, different loss. The config's ready dict serves
+only scored, fresh, never-served student tapes; `OPDCollator` scatters
+the teacher column to `[B, L]` under its dotted name in `.aux`. The loss
+is the detached score-function RKL surrogate (README §4's three-regime
+table; the worked shift-gather snippet gives the student logp of the
+served token):
 
     s_lp[b, j] = log softmax(logits[b, j-1])[input_ids[b, j]]
     div  = s_lp - teacher            # RKL integrand on the sampled support
     loss = (div.detach() * s_lp * mask).sum() / mask.sum()
 
-`mean(div)` over masked positions is the actual RKL estimate and is
-printed per step — the surrogate loss itself is not a divergence.
-
-    .venv/bin/python train.py --config config.yaml
+`mean(div)` over masked positions is the actual RKL estimate, printed
+per step — the surrogate loss itself is not a divergence.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 from itertools import islice
 from pathlib import Path
 
@@ -37,15 +38,55 @@ from gsj.envloader import (
     OPDCollator,
     TrajectoryStore,
     check_tokenizer,
+    collect_episodes,
     load_config,
     make_loader,
 )
 
+import score as scorer
+
+
+def collect_event(event: dict) -> None:
+    kind = event.get("type")
+    rest = {k: v for k, v in event.items() if k != "type"}
+    print(f"[collect] {kind}: {rest}", flush=True)
+
+
+def collect_and_verify(config, tag: str) -> list[str]:
+    secret_name = config.task.mcp_launch.token_secret
+    if secret_name and not os.environ.get(secret_name):
+        sys.exit(f"[{tag}] {secret_name} is not set — the MCP service tokens "
+                 f"are minted from it (export it, then rerun)")
+
+    report = collect_episodes(config, progress=collect_event)
+    print(f"[{tag}] CollectReport: exit={report.exit_code} "
+          f"reason={report.reason!r} attempted={report.attempted} "
+          f"new_trainable={report.new_trainable} counts={report.counts} "
+          f"gate_failures={report.gate_failures} wall={report.wall_s:.1f}s")
+    if report.new_trainable == 0:
+        sys.exit(f"[{tag}] no trainable episodes landed — aborting before "
+                 f"training (reason: {report.reason})")
+
+    store = TrajectoryStore.open(config.store.root)
+    for uid in report.uids:
+        record = store.load([uid])[0]
+        failures = list(record.env.outcome.gate_failures)
+        assert failures == [], f"{uid}: gate_failures={failures}"
+        prov = record.env.provenance
+        argv = list(prov["invocation"]["argv"])
+        mounts = argv.count("-v")
+        assert mounts == 2, f"{uid}: {mounts} mounts (want 2)"
+        print(f"[{tag}] {uid}: gates=[] (G2/G3/G5 green) mounts=2 "
+              f"G2={prov['system_prompt_hash'][:16]}... "
+              f"G3={prov['tool_roster_hash'][:16]}...")
+    store.close()
+    return list(report.uids)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--model", default="Qwen/Qwen3-0.6B")
+    parser.add_argument("--config", type=Path,
+                        default=Path(__file__).resolve().parent / "config.yaml")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -54,12 +95,22 @@ def main() -> None:
     lr = float(user.get("lr", 1e-4))
     out = args.config.parent / user.get("out", "adapters/run1")
 
+    # ---- collect (in-process), then score against the always-on teacher ----
+    collect_and_verify(config, "opd")
+    summary = scorer.score(config)
+    if summary["scored"] == 0:
+        sys.exit("[opd] nothing scored — the ready dict would starve; aborting")
+
+    # ---- train ----
     loader = make_loader(config)               # ready + mix arrive as data
     timeout_s = config.loader.timeout_s if config.loader.timeout_s is not None else 20.0
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(0)
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16)
+    model_id = str(config.driver["model_id"])
+    revision = str(config.driver["revision"])
+    model = AutoModelForCausalLM.from_pretrained(model_id, revision=revision,
+                                                 dtype=torch.bfloat16)
     model = get_peft_model(model, LoraConfig(
         r=8, lora_alpha=16, lora_dropout=0.0, bias="none", task_type="CAUSAL_LM",
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
@@ -69,16 +120,12 @@ def main() -> None:
     optimizer = torch.optim.AdamW(
         (p for p in model.parameters() if p.requires_grad), lr=lr)
 
-    # pinned to the codec's snapshot revision (driver.snapshot_path basename)
-    # so the §6.2 assert cannot break on an upstream HF main push
-    revision = (Path(str(config.driver["snapshot_path"])).name
-                if "snapshot_path" in config.driver else None)
-    tokenizer = AutoTokenizer.from_pretrained(args.model, revision=revision)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, revision=revision)
     pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id
-    tokenizer_json = Path(hf_hub_download(args.model, "tokenizer.json",
+    tokenizer_json = Path(hf_hub_download(model_id, "tokenizer.json",
                                           revision=revision))
 
-    print(f"[opd] device={device.type} model={args.model} steps={steps} "
+    print(f"[opd] device={device.type} model={model_id} steps={steps} "
           f"batch_size={config.loader.batch_size}")
 
     losses: list[float] = []
@@ -139,14 +186,16 @@ def main() -> None:
 
     store = TrajectoryStore.open(config.store.root)
     print("\n=== serve/commit accounting ===")
+    retired = 0
     for uid in sorted(uids_seen):
         view = store.view(uid)
+        retired += int(bool(view["consumed"]))
         print(f"  {uid}  serve_count={view['serve_count']} "
               f"retired={bool(view['consumed'])}")
     expected = completed_steps * config.loader.batch_size
     print(f"[opd] consistency: committed serves = {committed}, steps x batch = "
           f"{completed_steps} x {config.loader.batch_size} = {expected} -> "
-          f"{'OK' if committed == expected else 'MISMATCH'}")
+          f"{'OK' if committed == expected else 'MISMATCH'}; retired {retired}")
     store.close()
 
 

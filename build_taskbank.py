@@ -3,7 +3,10 @@
 
 Inputs are public URLs only (library docs/publishing.md):
   - case repos  https://github.com/MHGanainy/gsj-case-000{1..4}   (anonymous)
-  - sandbox     ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2
+    (the staging Forgejo hosts the SAME frozen refs at
+    http://<staging-host>:3000/gsj-admin/case_000{1..4}.git — either
+    source yields identical rows; GitHub needs no tunnel)
+  - sandbox     ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-3
 
 Timesteps are DISCOVERED, not copied from any manifest: each case repo
 publishes one branch per historical timestep (`timestep-N`), so
@@ -23,7 +26,7 @@ workaround is deleted).
 
 Run (any venv with the wheel):
     python -m venv .venv && .venv/bin/pip install \
-      "gsj-envloader @ https://github.com/MHGanainy/gsj-envloader/releases/download/v0.5.0/gsj_envloader-0.5.0-py3-none-any.whl"
+      "gsj-envloader @ https://github.com/MHGanainy/gsj-envloader/releases/download/v0.6.0/gsj_envloader-0.6.0-py3-none-any.whl"
     .venv/bin/python build_taskbank.py
 """
 
@@ -45,7 +48,7 @@ CASES = {
     "case_0004": "https://github.com/MHGanainy/gsj-case-0004.git",
 }
 EVAL_CASES = ["case_0004"]
-SANDBOX_IMAGE = "ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2"
+SANDBOX_IMAGE = "ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-3"
 PROMPTS = [PromptSpec.skill("summarize")]
 PROJECTS = ["sft", "opd", "rlvr"]
 TIMESTEP_REF = re.compile(r"refs/heads/timestep-(\d+)$")

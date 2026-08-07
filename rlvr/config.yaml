@@ -1,76 +1,62 @@
-# rlvr/config.yaml — ONE file constructs both sides (library §9 / ADR-0037):
-# seeding (`collector-venv/bin/gsj-collect --config rlvr/config.yaml` —
-# bounded, library 0.5.0), grading (`grade.py --config rlvr/config.yaml`, offline), and
-# the trainer (`train.py --config rlvr/config.yaml`). Field reference:
-# library docs/config-reference.md.
-#
-# HOST-BOUND VALUES: pinned to the recorded-run host (the H200, repo at
-# /home/sysadmin/gsj-envloader-examples). A new host edits the absolute
-# paths (one root prefix; the driver {model_id, revision} pair is portable).
+# =========================================================================
+# rlvr/config.yaml — endpoint-only (CP-31 of the library's M7 staging arc)
+# =========================================================================
+# ONE file drives everything `python train.py` does: collect_episodes
+# (in-process), verifiable-reward grading (in-process — ground truth from
+# the MCP service's own /health census, an ENDPOINT, not a shipped pages
+# tree), and the loader. Derived from the library's
+# staging/config.staging.yaml; field reference: docs/config-reference.md.
+# sft/config.yaml carries the long-form field commentary.
 
 store:
   root: /home/sysadmin/gsj-envloader-examples/rlvr/store
   config:
-    # Reuse-free via the ready's `serve_count: 0`; 1 here is posture.
-    max_serves_per_record: 1
+    max_serves_per_record: 1     # reuse-free via the ready's serve_count: 0
 
 task:
-  # Episode lifecycle; docker mode => constant /workspace, G2 singleton
-  # (sft/config.yaml carries the long-form field commentary — the three
-  # projects deliberately duplicate this file shape).
   work_root: /home/sysadmin/gsj-envloader-examples/rlvr/work
   episodes_root: /home/sysadmin/gsj-envloader-examples/rlvr/store/episodes
-  # templates_dir omitted — package data in the 0.5.0 wheel.
-  clone_url_for:
-    case_0001: https://github.com/MHGanainy/gsj-case-0001.git
-    case_0002: https://github.com/MHGanainy/gsj-case-0002.git
-    case_0003: https://github.com/MHGanainy/gsj-case-0003.git
-    case_0004: https://github.com/MHGanainy/gsj-case-0004.git
+  # templates_dir omitted — wheel package data.
+  clone_url_for: "http://172.28.9.10:3000/gsj-admin/{case_id}.git"
   pi_launch:
-    # Required-but-unused in docker mode; values = in-image paths (FINDINGS.md).
+    # Schema-required, dead in docker mode (H-33) — in-image paths as docs.
     entry: /opt/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
     extension: /opt/pi/node_modules/pi-mcp-extension/src/index.ts
     model_id: Qwen/Qwen3-0.6B
     context_window: 32768
   mcp_launch:
-    python: /opt/mcp-venv/bin/python   # unused in docker mode
-    # The image's own baked shim, named directly (in_image — library 0.5.0,
-    # H-28 closed; the CP-27 extraction workaround is deleted).
-    server: /opt/gsj-mcp/server.py
-    in_image: true
-    pages_root: /home/sysadmin/gsj-envloader-examples/assets/pages
+    transport: streamable-http
+    url_base: "http://127.0.0.1:8790"
+    token_secret: GSJ_MCP_TOKEN_SECRET
+    token_ttl_s: 3600
   tools_allowlist:
     [read, ls, grep, find, write, edit, bash,
      mcp_gsj_search_case, mcp_gsj_search_decisions,
      mcp_gsj_case_status, mcp_gsj_decision_stats]
   budgets:
     # RLVR grades the DELIVERABLE: the model needs wall time to finish
-    # writing it. 480 s starves the reward signal (all-zero rewards);
-    # 900 s is the budget that produced graded artifacts upstream.
+    # writing it (480 s starves the reward signal to all-zero).
     wall_timeout_s: 900.0
   execution: docker
   docker:
-    image: ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2
+    image: ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-3
+    pull: false                  # this H200's dockerd has no egress (save|load)
 
 collector:
-  harness_image: ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-mcp1.5.0-2
+  harness_image: ghcr.io/mhganainy/gsj-pi-harness:pi0.83.0-3
   pi_version: "0.83.0"
   uniagent_sha: 73b0f41efa88b311fd69129c6f835c012e925e73
-  collector_run_id: stranger-rlvr
-  # The published dev pins (release asset, downloaded by setup_collector.sh).
-  pins_path: /home/sysadmin/gsj-envloader-examples/assets/pins.dev.json
+  collector_run_id: zero-cli-rlvr
+  pins_path: "http://172.28.9.10:3000/gsj-admin/staging-inputs/raw/branch/main/pins.staging.json"
+  pins_sha256: bfa66b262765c57f5c662d9845860d003c7b0cf72e596b47a6005a537e12598b
   sampling_student: {temperature: 0.6, top_p: 0.95, top_k: 20}
-  sampling_teacher: {}             # deferred upstream — no teacher behavior in 0.4.0
   sampling_eval: {temperature: 0.6, top_p: 0.95, top_k: 20}
   concurrency: 2
-  seeding:                         # gsj-collect provisioning (library 0.5.0)
+  seeding:
     episodes: 9
-    deadline_s: 3600               # 9 episodes at a 900 s wall need headroom
-    drain_s: 1000                  # > the 900 s episode wall: Ctrl-C drains cleanly
+    deadline_s: 3600             # 9 episodes at a 900 s wall need headroom
 
 rollout:
-  # 1 x 9 train rows = 9 episodes at the 900 s wall; gsj-collect exits at
-  # the seeding target or round-complete.
   behavior: student
   target_completions_per_row: 1
   max_attempts_per_row: 3
@@ -78,15 +64,17 @@ rollout:
   seed: 0
 
 taskbank:
+  # DEFAULT: the committed bank (repo shows its data); sha equals the
+  # hosted staging artifact — same bytes either way. URL alternative:
+  # path: "http://172.28.9.10:3000/gsj-admin/staging-inputs/raw/branch/main/taskbank.parquet"
   path: /home/sysadmin/gsj-envloader-examples/rlvr/taskbank.parquet
+  sha256: 9eb8e3c2d3760b9b74c4cda20394fd54bd12f95e78d397dbd40631f801eb19da
 
 serving:
   base_url: http://127.0.0.1:8100/v1
   model: Qwen/Qwen3-0.6B
 
 driver:
-  # Codec tokenizer snapshot (host-bound, H-27; printed by setup_collector.sh).
-  # The host-portable codec pin pair (library 0.5.0, H-27 closed).
   model_id: Qwen/Qwen3-0.6B
   revision: c1899de289a04d12100db370d81485cdf75e47ca
 
@@ -94,20 +82,18 @@ loader:
   batch_size: 2
   poll_s: 0.25
   starve_log_every: 8
-  timeout_s: 20.0
+  timeout_s: 30.0
   ready:
-    # The RLVR serving predicate: graded, fresh, reuse-free. Takes
-    # `truncated` AND the reward-0 no-artifact mass deliberately —
-    # absence of work is a verifiable outcome the grader emits, and the
-    # advantage baseline needs that mass. `rlvr._complete` gates on
-    # grade.py having run.
+    # Graded, fresh, reuse-free. Takes `truncated` AND the reward-0
+    # no-artifact mass deliberately — absence of work is a verifiable
+    # outcome the grader emits, and the advantage baseline needs the mass.
     env.outcome.finish_state: {in: [completed, truncated]}
     rlvr._complete: true
     policy_lag: {lte: 0}
     serve_count: 0
 
 user:
-  # Never read by the library. train.py reads lr/steps/out.
+  # Never read by the library; train.py reads these.
   lr: 1.0e-4
   steps: 4
   out: adapters/run1
