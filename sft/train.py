@@ -35,6 +35,12 @@ from gsj.envloader import (
     make_loader,
 )
 
+# Root-exported from gsj-envloader 0.7.0 (H-42); the module path below works
+# on 0.6.0 too — ONE call, before collect_episodes, silences the benign
+# per-session uvicorn CancelledError teardown noise (F-19). --no-log-filter
+# shows the raw noise instead.
+from gsj.envloader.collect import install_log_filter
+
 
 def collect_event(event: dict) -> None:
     """Render the structured progress events as one line each."""
@@ -90,7 +96,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path,
                         default=Path(__file__).resolve().parent / "config.yaml")
+    parser.add_argument("--no-log-filter", action="store_true",
+                        help="skip install_log_filter() — shows the raw uvicorn teardown noise (F-19)")
     args = parser.parse_args()
+    if not args.no_log_filter:
+        install_log_filter()
 
     config = load_config(args.config)          # fail-fast at the file
     user = config.user
