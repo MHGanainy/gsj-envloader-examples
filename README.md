@@ -106,3 +106,8 @@ every environment input is an endpoint or a sha-pinned URL. What remains
 non-zero is the venv build (three pip invocations, F-01's long shadow)
 and the estate itself (serving, MCP, docker are operator infrastructure).
 `FINDINGS.md` is the honest ledger.
+
+The collector artifact is fetched at a **commit-sha** raw URL, not a tag
+(F-22): the library's M8b purge moved it to `staging/collector/`, and the
+`v0.7.0` tag the previous URL named was never cut. It returns to the tag
+form when the library publishes `v0.8.0`.

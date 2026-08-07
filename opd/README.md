@@ -22,7 +22,7 @@ two URLs, nothing else (`serving.base_url` in config.yaml,
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt \
-  -r https://raw.githubusercontent.com/MHGanainy/gsj-envloader/v0.7.0/devharness/uniagent/collector-requirements.txt
+  -r https://raw.githubusercontent.com/MHGanainy/gsj-envloader/baac10bad425b97ef45ec4d3129197f646e87360/staging/collector/collector-requirements.txt
 .venv/bin/pip install --no-deps sglang==0.5.10.post1 \
   "verl @ git+https://github.com/verl-project/uni-agent.git@73b0f41efa88b311fd69129c6f835c012e925e73#subdirectory=verl"
 ```
